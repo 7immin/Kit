@@ -141,7 +141,7 @@
 ### 데이터 구조
 
 <!-- DB 스키마, JSON 구조, 파일 저장 방식 등 -->
-<img width="876" height="820" alt="Image" src="https://github.com/user-attachments/assets/a891e8c4-7dc0-4995-8459-307165da9a9e" />
+<img width="818" height="760" alt="Image" src="https://github.com/user-attachments/assets/8ab39eee-ba74-424a-952b-76321501abe1" />
 
 ### API / 외부 서비스 연동
 
