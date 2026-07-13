@@ -1,67 +1,48 @@
-// mobile/app/waiting.tsx
 import { View, Text, StyleSheet } from 'react-native';
+import { useKitStore } from '../store/useKitStore';
+
+function AudienceCount() {
+  const count = useKitStore((s) => s.audienceCount);
+  return <Text style={styles.value}>청중 {count}명 입장</Text>;
+}
+
+function PresenterList() {
+  const presenters = useKitStore((s) => s.presenters);
+  return (
+    <View>
+      <Text style={styles.label}>발표자 ({presenters.length}명)</Text>
+      {presenters.map((p) => (
+        <Text key={p.userId} style={styles.value}>
+          {p.name} {p.isCurrentPresenter ? '(현재 발표자)' : ''}
+        </Text>
+      ))}
+    </View>
+  );
+}
 
 export default function WaitingScreen() {
+  const displayCode = useKitStore((s) => s.displayCode);
+  const presenterCode = useKitStore((s) => s.presenterCode);
+
   return (
     <View style={styles.container}>
-      <View style={styles.codeRow}>
-        <Text style={styles.codeLabel}>청중 코드</Text>
-        <Text style={styles.codeValue}>A1B2C3</Text>
-      </View>
+      <Text style={styles.label}>디스플레이 코드</Text>
+      <Text style={styles.code}>{displayCode ?? '-'}</Text>
 
-      <View style={styles.codeRow}>
-        <Text style={styles.codeLabel}>발표자 코드</Text>
-        <Text style={styles.codeValue}>P9X7Q2</Text>
-      </View>
+      <Text style={styles.label}>발표자 코드</Text>
+      <Text style={styles.code}>{presenterCode ?? '-'}</Text>
 
-      <Text style={styles.hint}>청중은 PC 화면의 QR로 입장하고, 다른 발표자는 위 발표자 코드를 앱에 입력하면 됩니다</Text>
-
-      <Text style={styles.sectionTitle}>청중: 0명 입장</Text>
-
-      <Text style={styles.sectionTitle}>발표 시간 설정</Text>
-      <Text style={styles.placeholder}>(스크롤 타이머 자리 - 다음 단계에서 추가)</Text>
-
-      <Text style={styles.sectionTitle}>발표자</Text>
-      <Text style={styles.placeholder}>(발표자 목록 자리 - 다음 단계에서 추가)</Text>
+      <View style={{ height: 24 }} />
+      <AudienceCount />
+      <View style={{ height: 16 }} />
+      <PresenterList />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#111',
-    padding: 24,
-    paddingTop: 60,
-  },
-  codeRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  codeLabel: {
-    color: '#888',
-    fontSize: 14,
-  },
-  codeValue: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  hint: {
-    color: '#666',
-    fontSize: 12,
-    marginTop: 8,
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '600',
-    marginTop: 24,
-    marginBottom: 8,
-  },
-  placeholder: {
-    color: '#666',
-  },
+  container: { flex: 1, backgroundColor: '#111', padding: 24, paddingTop: 60, gap: 8 },
+  label: { color: '#888', fontSize: 13, marginTop: 12 },
+  value: { color: '#fff', fontSize: 15 },
+  code: { color: '#3FD0C9', fontSize: 20, fontWeight: '700', fontFamily: 'monospace' },
 });
