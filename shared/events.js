@@ -109,9 +109,8 @@ const EVENTS = {
 
   PRESENTER_TRANSFER: 'presenter:transfer',
   // payload: { targetUserId: string }
-
   PRESENTER_CHANGED: 'presenter:changed',
-  // payload: { newPresenterId: string, fileUrl: string }
+  // payload: { newPresenterId: string }
 
 
   // ══════════════════════════════════════════════
@@ -119,13 +118,14 @@ const EVENTS = {
   // ══════════════════════════════════════════════
 
   FILE_READY: 'file:ready',
-  // payload: { fileId: string, ownerId: string, slideCount: number }
+  // payload: { fileId: string, slideCount: number }
 
   NOTES_READY: 'notes:ready',
   // payload: {
   //   slideNotes: Array<{ slideIndex: number, text: string }>,
   //   source: 'auto_split' | 'ai_summarize' | 'ai_generate' | 'manual'
   // }
+
 
   NOTE_SAVED: 'note:saved',
   // payload: { slideIndex: number, editedByName: string }
