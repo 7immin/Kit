@@ -8,62 +8,79 @@ const db = require('./database.js');
 
 const app = express();
 app.use(cors());
-app.use(express.json()); // REST API에서 JSON 바디를 읽기 위해 필수!
+app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST", "PUT"] }
 });
 
-// 랜덤 방 코드 6자리 생성 함수
 const generateCode = () => Math.random().toString(36).substring(2, 8).toUpperCase();
-
-const roomTimers = {}; // 방마다 타이머(setInterval)를 저장할 공간
+const roomTimers = {}; 
+const roomSlides = {}; // 스펙 일치: 서버에서 현재 슬라이드 번호(slideIndex)를 추적하기 위한 저장소
 
 // =========================================================================
-// [REST API 구역] 파일 업로드, AI 처리, 대본 수정 등 실시간성이 없는 무거운 작업
+// [REST API 구역]
 // =========================================================================
 
-// 1. 대본 업로드 (자동 분배 트리거)
 app.post('/rooms/:roomId/script', (req, res) => {
   const { roomId } = req.params;
-  // TODO: 파일 저장 및 텍스트 추출 후 슬라이드 개수에 맞게 분할하여 DB(slides) 저장
-  // (임시 목업 응답)
   const mockNotes = [{ slideIndex: 1, text: '자동 분할된 첫 번째 슬라이드 대본입니다.' }];
-
-  // 처리가 끝나면 소켓으로 앱에 "준비 완료" 알림만 가볍게 쏴줌
   io.to(roomId).emit(EVENTS.NOTES_READY, { slideNotes: mockNotes, source: 'auto_split' });
   res.json({ success: true, message: '대본 업로드 및 분할 완료' });
 });
 
-// 2. AI 요약/생성 버튼 클릭
 app.post('/rooms/:roomId/slides/note/ai', (req, res) => {
   const { roomId } = req.params;
   const { hasScript } = req.body;
-  // TODO: Gemini API 태우고 DB 업데이트 로직
   const mockNotes = [{ slideIndex: 1, text: 'AI가 요약한 핵심 키워드 1, 2, 3' }];
-
   io.to(roomId).emit(EVENTS.NOTES_READY, { slideNotes: mockNotes, source: hasScript ? 'ai_summarize' : 'ai_generate' });
   res.json({ success: true, message: 'AI 처리 완료' });
 });
 
-// 3. 발표자가 노트를 직접 수동으로 수정 후 저장
 app.put('/rooms/:roomId/slides/:slideIndex/note', (req, res) => {
   const { roomId, slideIndex } = req.params;
   const { newNote, editedByName } = req.body;
-
-  db.prepare('UPDATE slides SET ai_summary_note = ? WHERE room_id = ? AND slide_index = ?')
-    .run(newNote, roomId, slideIndex);
-
-  // 다른 공동 발표자들의 화면에도 수정되었다는 알림(토스트)을 띄우기 위해 브로드캐스트
+  db.prepare('UPDATE slides SET ai_summary_note = ? WHERE room_id = ? AND slide_index = ?').run(newNote, roomId, slideIndex);
   io.to(roomId).emit(EVENTS.NOTE_SAVED, { slideIndex: parseInt(slideIndex, 10), editedByName });
   res.json({ success: true });
 });
 
+// 방의 모든 질문 리스트 불러오기
+app.get('/rooms/:roomId/questions', (req, res) => {
+  const { roomId } = req.params;
+  const questions = db.prepare(`
+    SELECT question_id as questionId, content as text, author_name as name, status, created_at as createdAt, selected_at as answeredAt, completed_at as completedAt
+    FROM questions WHERE room_id = ? ORDER BY created_at DESC
+  `).all(roomId);
+
+  // 스펙 일치: questionId를 강제로 문자열(String)로 변환
+  const formattedQuestions = questions.map(q => ({
+    ...q,
+    questionId: String(q.questionId) 
+  }));
+
+  res.json({ success: true, questions: formattedQuestions });
+});
 
 // =========================================================================
-// [Socket.io 구역] 실시간 상태 동기화 및 Q&A 시스템
+// [Socket.io 구역]
 // =========================================================================
+
+// 발표자 목록 실시간 브로드캐스트 헬퍼 함수
+function broadcastPresenterList(roomId) {
+  const room = db.prepare('SELECT current_presenter_id FROM rooms WHERE room_id = ?').get(roomId);
+  if (!room) return;
+  const presenters = db.prepare("SELECT user_id, name FROM users WHERE room_id = ? AND role IN ('host', 'presenter')").all(roomId);
+  
+  // 스펙 일치: payload에서 isHost 제거 (events.js에 명시된 속성만 전송)
+  const list = presenters.map(p => ({
+    userId: p.user_id,
+    name: p.name || '방장',
+    isCurrentPresenter: p.user_id === room.current_presenter_id
+  }));
+  io.to(roomId).emit(EVENTS.PRESENTER_LIST_UPDATE, { presenters: list });
+}
 
 io.on('connection', (socket) => {
   console.log(`클라이언트 연결됨: ${socket.id}`);
@@ -71,41 +88,41 @@ io.on('connection', (socket) => {
   // ----------------------------------------------------
   // [1] 방 생성 & 입장 로직
   // ----------------------------------------------------
-  socket.on(EVENTS.ROOM_CREATE, () => {
+  socket.on(EVENTS.ROOM_CREATE, ({ title }) => {
+    if (!title || title.trim() === '') return socket.emit('error', { message: '방 제목을 입력해주세요.' });
+
     const roomId = generateCode();
     const presenterCode = generateCode();
     const displayCode = generateCode();
     const audienceCode = generateCode();
 
-    // 방 만든 사람이 최초의 current_presenter_id 권한을 가짐
     const stmt = db.prepare(`
-      INSERT INTO rooms (room_id, host_device_id, current_presenter_id, presenter_code, display_code, audience_code, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'wait')
+      INSERT INTO rooms (room_id, title, host_device_id, current_presenter_id, presenter_code, display_code, audience_code, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'wait')
     `);
-    stmt.run(roomId, socket.id, socket.id, presenterCode, displayCode, audienceCode);
+    stmt.run(roomId, title, socket.id, socket.id, presenterCode, displayCode, audienceCode);
 
-    // [FIX 3] 방장도 users 테이블에 등록해야 발표 종료 시 발표자 수 집계에 포함됨
-    // (기존 코드는 rooms.current_presenter_id만 채우고 users에는 아무도 안 넣어서
-    //  공동 발표자가 없으면 total_presenters가 0으로 기록되는 버그가 있었음)
-    db.prepare('INSERT OR REPLACE INTO users (user_id, room_id, role, nickname) VALUES (?, ?, ?, ?)')
+    db.prepare('INSERT OR REPLACE INTO users (user_id, room_id, role, name) VALUES (?, ?, ?, ?)')
       .run(socket.id, roomId, 'host', null);
 
     socket.join(roomId);
-    socket.emit(EVENTS.ROOM_CREATED, { roomId, displayCode, audienceCode, presenterCode });
-    console.log(`[방 생성] Room: ${roomId} (방장: ${socket.id})`);
+    socket.emit(EVENTS.ROOM_CREATED, { roomId, title, displayCode, audienceCode, presenterCode });
+    broadcastPresenterList(roomId);
   });
 
   socket.on(EVENTS.ROOM_JOIN_PRESENTER, ({ roomId, presenterCode, name }) => {
     const room = db.prepare('SELECT * FROM rooms WHERE room_id = ? AND presenter_code = ?').get(roomId, presenterCode);
     if (!room) return socket.emit('error', { message: '방을 찾을 수 없거나 코드가 틀렸습니다.' });
 
-    db.prepare('INSERT OR REPLACE INTO users (user_id, room_id, role, nickname) VALUES (?, ?, ?, ?)')
+    db.prepare('INSERT OR REPLACE INTO users (user_id, room_id, role, name) VALUES (?, ?, ?, ?)')
       .run(socket.id, roomId, 'presenter', name);
 
     socket.join(roomId);
     socket.emit(EVENTS.ROOM_JOINED, {
-      roomId, role: 'presenter', userId: socket.id, nickname: name, currentFileUrl: room.file_url || null
+      roomId, role: 'presenter', userId: socket.id, title: room.title, name: name,
+      displayCode: room.display_code, presenterCode: room.presenter_code, audienceCode: null, currentFileUrl: room.file_url || null
     });
+    broadcastPresenterList(roomId);
   });
 
   socket.on(EVENTS.ROOM_JOIN_DISPLAY, ({ displayCode }) => {
@@ -117,86 +134,73 @@ io.on('connection', (socket) => {
 
     socket.join(room.room_id);
     socket.emit(EVENTS.ROOM_JOINED, {
-      roomId: room.room_id, role: 'display', userId: socket.id, currentFileUrl: room.file_url || null, audienceCode: room.audience_code
+      roomId: room.room_id, role: 'display', userId: socket.id, title: room.title, name: null,
+      displayCode: null, presenterCode: null, audienceCode: room.audience_code, currentFileUrl: room.file_url || null
     });
   });
 
-  socket.on(EVENTS.ROOM_JOIN_AUDIENCE, ({ audienceCode, nickname }) => {
+  socket.on(EVENTS.ROOM_JOIN_AUDIENCE, ({ audienceCode, name }) => {
     const room = db.prepare('SELECT * FROM rooms WHERE audience_code = ?').get(audienceCode);
     if (!room) return socket.emit('error', { message: '잘못된 코드입니다.' });
 
-    const roomId = room.room_id;
-    let finalNickname = nickname;
-
-    // 기획 반영: 익명 모드이거나 이름을 안 보냈으면 자동 생성
-    if (room.question_identity_mode === 'anonymous' || !finalNickname) {
-      finalNickname = `익명_${Math.floor(Math.random() * 9000) + 1000}`;
+    // 이름만 필수로 검증
+    if (!name || name.trim() === '') {
+      return socket.emit('error', { message: '이름을 입력해주세요.' });
     }
 
-    db.prepare('INSERT OR REPLACE INTO users (user_id, room_id, role, nickname) VALUES (?, ?, ?, ?)')
-      .run(socket.id, roomId, 'audience', finalNickname);
+    db.prepare('INSERT OR REPLACE INTO users (user_id, room_id, role, name) VALUES (?, ?, ?, ?)')
+      .run(socket.id, room.room_id, 'audience', name);
 
-    socket.join(roomId);
-
-    // 기획 반영: 확정된 닉네임을 청중에게 다시 내려줌
+    socket.join(room.room_id);
     socket.emit(EVENTS.ROOM_JOINED, {
-      roomId, role: 'audience', userId: socket.id, nickname: finalNickname, currentFileUrl: room.file_url || null
+      roomId: room.room_id, role: 'audience', userId: socket.id, title: room.title, 
+      name, // 저장된 이름 전송
+      displayCode: null, presenterCode: null, audienceCode: null, currentFileUrl: room.file_url || null
     });
 
-    const countQuery = db.prepare("SELECT COUNT(*) as count FROM users WHERE room_id = ? AND role = 'audience'").get(roomId);
-    io.to(roomId).emit(EVENTS.AUDIENCE_COUNT_UPDATE, { count: countQuery.count });
+    const countQuery = db.prepare("SELECT COUNT(*) as count FROM users WHERE room_id = ? AND role = 'audience'").get(room.room_id);
+    io.to(room.room_id).emit(EVENTS.AUDIENCE_COUNT_UPDATE, { count: countQuery.count });
   });
 
   // ----------------------------------------------------
-  // [2] 설정 변경 & 발표 시작/종료 (권한 검증 포함)
+  // [2] 설정 변경 & 발표 시작/종료
   // ----------------------------------------------------
   socket.on(EVENTS.ROOM_SETTINGS_UPDATE, (payload) => {
-    const room = db.prepare('SELECT * FROM rooms WHERE current_presenter_id = ?').get(socket.id);
-    if (!room) return; // 권한이 없으면 무시
+    const room = db.prepare('SELECT * FROM rooms WHERE host_device_id = ? AND status = ?').get(socket.id, 'wait');
+    if (!room) return;
+
+    // 스펙 일치: payload.allowMidQuestions 값을 DB 스키마(question_timing_mode)에 맞게 변환
+    const timingMode = payload.allowMidQuestions ? 'realtime' : 'post';
 
     db.prepare(`UPDATE rooms SET duration_minutes = ?, question_identity_mode = ?, question_timing_mode = ? WHERE room_id = ?`)
-      .run(payload.durationMinutes, payload.questionIdentityMode, payload.questionTimingMode, room.room_id);
+      .run(payload.durationMinutes, payload.questionIdentityMode, timingMode, room.room_id);
 
-    io.to(room.room_id).emit(EVENTS.ROOM_SETTINGS_UPDATED, payload);
+    io.to(room.room_id).emit(EVENTS.ROOM_SETTINGS_UPDATED, payload); // payload는 원본 그대로 브로드캐스트
   });
 
   socket.on(EVENTS.PRESENTATION_START, (payload) => {
-    const room = db.prepare('SELECT * FROM rooms WHERE current_presenter_id = ?').get(socket.id);
+    const room = db.prepare('SELECT * FROM rooms WHERE host_device_id = ? AND status = ?').get(socket.id, 'wait');
     if (!room) return;
 
-    // 설정 최종 고정 및 진행 상태로 변경
     const startedAt = Date.now();
-    // [FIX 1] durationSeconds가 어디서도 선언되지 않아 아래 setInterval 콜백에서
-    // ReferenceError로 서버 전체가 죽던 버그. payload.durationMinutes 기준으로 계산해서 추가.
     const durationSeconds = payload.durationMinutes * 60;
+    const timingMode = payload.allowMidQuestions ? 'realtime' : 'post';
 
     db.prepare(`UPDATE rooms SET duration_minutes = ?, question_identity_mode = ?, question_timing_mode = ?, status = 'progress', started_at = ? WHERE room_id = ?`)
-      .run(payload.durationMinutes, payload.questionIdentityMode, payload.questionTimingMode, startedAt, room.room_id);
+      .run(payload.durationMinutes, payload.questionIdentityMode, timingMode, startedAt, room.room_id);
 
-    io.to(room.room_id).emit(EVENTS.PRESENTATION_STARTED, {
-      startedAt, ...payload, currentFileUrl: room.file_url
-    });
+    roomSlides[room.room_id] = 1; // 슬라이드 인덱스 1부터 시작
 
-    if (roomTimers[room.room_id]) clearInterval(roomTimers[room.room_id]); // 기존 타이머가 있으면 초기화
+    io.to(room.room_id).emit(EVENTS.PRESENTATION_STARTED, { startedAt, ...payload, currentFileUrl: room.file_url });
 
-    io.to(room.room_id).emit(EVENTS.TIMER_UPDATE, {
-      elapsedSeconds: 0,
-      durationSeconds: durationSeconds,
-      isOvertime: false
-    });
+    if (roomTimers[room.room_id]) clearInterval(roomTimers[room.room_id]);
+    io.to(room.room_id).emit(EVENTS.TIMER_UPDATE, { elapsedSeconds: 0, durationSeconds, isOvertime: false });
 
-    // 그 다음부터 1초마다 쏴주기
     roomTimers[room.room_id] = setInterval(() => {
       const now = Date.now();
       const elapsedSeconds = Math.floor((now - startedAt) / 1000);
       const isOvertime = elapsedSeconds >= durationSeconds;
-
-      // 1초마다 방 안의 모두에게 남은 시간 쏴주기 (오버타임이어도 멈추지 않고 계속 흘러감)
-      io.to(room.room_id).emit(EVENTS.TIMER_UPDATE, {
-        elapsedSeconds,
-        durationSeconds,
-        isOvertime
-      });
+      io.to(room.room_id).emit(EVENTS.TIMER_UPDATE, { elapsedSeconds, durationSeconds, isOvertime });
     }, 1000);
   });
 
@@ -207,15 +211,13 @@ io.on('connection', (socket) => {
     const endTime = Date.now();
     const totalElapsedSeconds = Math.floor((endTime - room.started_at) / 1000);
 
-    // [FIX 3] 방장(host)도 이제 users에 들어있으므로 presenterCount에 'host'도 포함해야
-    // 공동 발표자 없이 혼자 발표한 경우에도 총 발표자 수가 0이 아니라 1로 정확히 집계됨
     const presenterCount = db.prepare("SELECT COUNT(*) as c FROM users WHERE room_id = ? AND role IN ('host', 'presenter')").get(room.room_id).c;
     const audienceCount = db.prepare("SELECT COUNT(*) as c FROM users WHERE room_id = ? AND role = 'audience'").get(room.room_id).c;
 
     db.prepare(`UPDATE rooms SET status = 'end', ended_at = ?, total_time_seconds = ?, total_presenters = ?, total_audience = ? WHERE room_id = ?`)
       .run(endTime, totalElapsedSeconds, presenterCount, audienceCount, room.room_id);
 
-    io.to(room.room_id).emit(EVENTS.PRESENTATION_ENDED, { totalElapsedSeconds, presenterCount, audienceCount });
+    io.to(room.room_id).emit(EVENTS.PRESENTATION_ENDED, { totalElapsedSeconds });
 
     if (roomTimers[room.room_id]) {
       clearInterval(roomTimers[room.room_id]);
@@ -224,53 +226,112 @@ io.on('connection', (socket) => {
   });
 
   // ----------------------------------------------------
-  // [3] 슬라이드 제어 (권한 검증 포함)
+  // [3] 발표자 교체 및 슬라이드 제어
   // ----------------------------------------------------
-  // [FIX 2] 기존에는 이 두 핸들러가 PRESENTATION_START 콜백 안쪽에 중첩되어 있어서,
-  // presentation:start가 두 번 호출되면(재접속/중복 클릭 등) 리스너가 계속 누적 등록되고
-  // slide:next 한 번에 slide:changed가 여러 번 나가는 버그가 있었음.
-  // connection 스코프 최상단으로 옮겨서 소켓당 딱 한 번만 등록되도록 수정.
+  socket.on(EVENTS.PRESENTER_TRANSFER, ({ targetUserId }) => {
+    const room = db.prepare('SELECT * FROM rooms WHERE current_presenter_id = ?').get(socket.id);
+    if (!room) return;
+    
+    db.prepare('UPDATE rooms SET current_presenter_id = ? WHERE room_id = ?').run(targetUserId, room.room_id);
+    io.to(room.room_id).emit(EVENTS.PRESENTER_CHANGED, { newPresenterId: targetUserId, fileUrl: room.file_url });
+    broadcastPresenterList(room.room_id);
+  });
+
+  // 스펙 일치: 방향(direction) 대신 계산된 슬라이드 번호(slideIndex)를 내려줌
   socket.on(EVENTS.SLIDE_NEXT, () => {
     const room = db.prepare('SELECT room_id FROM rooms WHERE current_presenter_id = ?').get(socket.id);
-    if (room) io.to(room.room_id).emit(EVENTS.SLIDE_CHANGED, { direction: 'next' });
+    if (room) {
+      roomSlides[room.room_id] = (roomSlides[room.room_id] || 1) + 1;
+      io.to(room.room_id).emit(EVENTS.SLIDE_CHANGED, { slideIndex: roomSlides[room.room_id] });
+    }
   });
 
   socket.on(EVENTS.SLIDE_PREV, () => {
     const room = db.prepare('SELECT room_id FROM rooms WHERE current_presenter_id = ?').get(socket.id);
-    if (room) io.to(room.room_id).emit(EVENTS.SLIDE_CHANGED, { direction: 'prev' });
+    if (room) {
+      roomSlides[room.room_id] = Math.max(1, (roomSlides[room.room_id] || 1) - 1);
+      io.to(room.room_id).emit(EVENTS.SLIDE_CHANGED, { slideIndex: roomSlides[room.room_id] });
+    }
   });
 
   // ----------------------------------------------------
-  // [4] Q&A 시스템
+  // [4] Q&A 시스템 (답변 로직 권한 분리 및 브로드캐스트)
   // ----------------------------------------------------
   socket.on(EVENTS.QUESTION_SUBMIT, ({ text, category }) => {
     const user = db.prepare('SELECT * FROM users WHERE user_id = ?').get(socket.id);
     if (!user) return;
 
-    const info = db.prepare('INSERT INTO questions (room_id, author_name, content, created_at) VALUES (?, ?, ?, ?)')
-      .run(user.room_id, user.nickname, text, Date.now());
+    const room = db.prepare('SELECT status, question_timing_mode, question_identity_mode FROM rooms WHERE room_id = ?').get(user.room_id);
+    if (!room) return;
 
-    // 앱(발표자)들에게 새 질문 도착 알림
-    io.to(user.room_id).emit(EVENTS.QUESTION_NEW, {
-      questionId: info.lastInsertRowid, text, nickname: user.nickname, category, createdAt: Date.now()
+    if (room.question_timing_mode === 'post' && room.status !== 'end') {
+      return socket.emit('error', { message: '발표 종료 후 질문해 주세요.' });
+    }
+
+    // 익명 모드면 무조건 '익명', 기명 모드면 유저가 가입 시 적은 '이름'으로 강제 설정
+    const authorName = room.question_identity_mode === 'anonymous' ? '익명' : user.name;
+
+    const info = db.prepare('INSERT INTO questions (room_id, author_name, content, created_at, status) VALUES (?, ?, ?, ?, ?)')
+      .run(user.room_id, authorName, text, Date.now(), 'pending');
+
+    io.to(user.room_id).emit(EVENTS.QUESTION_NEW, { 
+      questionId: String(info.lastInsertRowid), 
+      text, 
+      name: authorName,
+      category, 
+      createdAt: Date.now() 
     });
   });
 
-  socket.on(EVENTS.QUESTION_ANSWER_SELECT, ({ questionId }) => {
-    const user = db.prepare('SELECT * FROM users WHERE user_id = ?').get(socket.id);
-    if (!user) return;
+  socket.on(EVENTS.QUESTION_ANSWER_START, ({ questionId }) => {
+    const user = db.prepare('SELECT room_id, role FROM users WHERE user_id = ?').get(socket.id);
+    if (!user || (user.role !== 'presenter' && user.role !== 'host')) return;
 
-    // 선택된 시간(selected_at)을 기록하여 이 값을 기준으로 내림차순 정렬할 수 있게 함
-    db.prepare('UPDATE questions SET is_selected = 1, selected_at = ? WHERE question_id = ?').run(Date.now(), questionId);
+    const isAnswering = db.prepare("SELECT * FROM questions WHERE room_id = ? AND status = 'answering'").get(user.room_id);
+    if (isAnswering) return;
 
-    // 기획 반영: 이 방에서 채택된 모든 질문을 최신순(내림차순)으로 긁어오기
+    const q = db.prepare("SELECT * FROM questions WHERE question_id = ?").get(questionId);
+    if (!q) return;
+
+    try {
+      db.prepare("UPDATE questions SET status = 'answering', selected_at = ?, answering_presenter_id = ? WHERE question_id = ?")
+        .run(Date.now(), socket.id, questionId);
+    } catch (e) {
+      db.prepare("UPDATE questions SET status = 'answering', selected_at = ? WHERE question_id = ?").run(Date.now(), questionId);
+    }
+
+    io.to(user.room_id).emit(EVENTS.QUESTION_ANSWER_STARTED, {
+      questionId: String(questionId), // String 변환
+      text: q.content, name: q.author_name, answeringPresenterId: socket.id
+    });
+  });
+
+  socket.on(EVENTS.QUESTION_ANSWER_END, ({ questionId }) => {
+    const user = db.prepare('SELECT room_id, role FROM users WHERE user_id = ?').get(socket.id);
+    if (!user || (user.role !== 'presenter' && user.role !== 'host')) return;
+
+    const q = db.prepare("SELECT * FROM questions WHERE question_id = ? AND status = 'answering'").get(questionId);
+    if (!q) return;
+
+    if (q.answering_presenter_id && q.answering_presenter_id !== socket.id) return;
+
+    const now = Date.now();
+    db.prepare("UPDATE questions SET status = 'completed', completed_at = ? WHERE question_id = ?").run(now, questionId);
+
+    io.to(user.room_id).emit(EVENTS.QUESTION_ANSWER_ENDED, { questionId: String(questionId), answeredAt: now }); // String 변환
+
     const answered = db.prepare(`
-      SELECT question_id as questionId, content as text, author_name as nickname, selected_at as answeredAt
-      FROM questions WHERE room_id = ? AND is_selected = 1 ORDER BY selected_at DESC
+      SELECT question_id as questionId, content as text, author_name as name, completed_at as answeredAt
+      FROM questions WHERE room_id = ? AND status = 'completed' ORDER BY completed_at DESC
     `).all(user.room_id);
+    
+    // String 변환
+    const formattedAnswered = answered.map(q => ({
+      ...q,
+      questionId: String(q.questionId)
+    }));
 
-    // PC웹과 청중웹 화면 상단에 누적 리스트 업데이트
-    io.to(user.room_id).emit(EVENTS.ANSWERED_QUESTIONS_UPDATE, { answered });
+    io.to(user.room_id).emit(EVENTS.ANSWERED_QUESTIONS_UPDATE, { answered: formattedAnswered });
   });
 
   // ----------------------------------------------------
@@ -282,9 +343,12 @@ io.on('connection', (socket) => {
 
     if (user) {
       db.prepare('DELETE FROM users WHERE user_id = ?').run(socket.id);
+      
       if (user.role === 'audience') {
         const countQuery = db.prepare("SELECT COUNT(*) as count FROM users WHERE room_id = ? AND role = 'audience'").get(user.room_id);
         io.to(user.room_id).emit(EVENTS.AUDIENCE_COUNT_UPDATE, { count: countQuery.count });
+      } else if (user.role === 'host' || user.role === 'presenter') {
+        broadcastPresenterList(user.room_id);
       }
     }
   });
