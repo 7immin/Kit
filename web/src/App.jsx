@@ -1,3 +1,4 @@
+// web/src/App.jsx
 import { BrowserRouter, Routes, Route, useSearchParams, Link } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { useEffect, useState } from 'react';
@@ -13,10 +14,9 @@ const HomeView = () => {
   const [testRoomInfo, setTestRoomInfo] = useState(null);
   const [timerData, setTimerData] = useState(null); 
 
-  // ✨ 추가된 발표 환경 설정 State
   const [durationMinutes, setDurationMinutes] = useState(1);
-  const [questionIdentityMode, setQuestionIdentityMode] = useState('anonymous'); // 'anonymous' | 'named'
-  const [allowMidQuestions, setAllowMidQuestions] = useState(true); // true(realtime) | false(post)
+  const [anonymous, setAnonymous] = useState(true); // ✨ 명세서 동기화: Boolean 타입 설정 변경
+  const [allowMidQuestions, setAllowMidQuestions] = useState(true); 
 
   useEffect(() => {
     socket.on('timer:update', (data) => setTimerData(data));
@@ -33,10 +33,9 @@ const HomeView = () => {
   };
 
   const handleStart = () => {
-    // 설정된 State 값들을 모아서 서버로 전송
     socket.emit('presentation:start', { 
       durationMinutes: Number(durationMinutes), 
-      questionIdentityMode, 
+      anonymous, 
       allowMidQuestions 
     });
   };
@@ -72,7 +71,6 @@ const HomeView = () => {
             <p><strong>🖥️ 디스플레이 코드:</strong> <span style={{ color: '#d63031' }}>{testRoomInfo.displayCode}</span></p>
             <p><strong>📱 청중 코드:</strong> <span style={{ color: '#00b894' }}>{testRoomInfo.audienceCode}</span></p>
             
-            {/* ✨ 추가된 설정 UI */}
             <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#dfe6e9', borderRadius: '8px' }}>
               <h4 style={{ margin: '0 0 10px 0' }}>⚙️ 발표 환경 설정</h4>
               
@@ -89,9 +87,9 @@ const HomeView = () => {
 
               <div style={{ marginBottom: '10px' }}>
                 <label style={{ marginRight: '10px' }}><strong>질문 방식:</strong></label>
-                <select value={questionIdentityMode} onChange={(e) => setQuestionIdentityMode(e.target.value)} style={{ padding: '5px' }}>
-                  <option value="anonymous">익명 허용</option>
-                  <option value="named">기명(실명) 필수</option>
+                <select value={anonymous} onChange={(e) => setAnonymous(e.target.value === 'true')} style={{ padding: '5px' }}>
+                  <option value="true">익명 허용</option>
+                  <option value="false">기명(실명) 필수</option>
                 </select>
               </div>
 
@@ -156,21 +154,19 @@ const DisplayView = () => {
   useEffect(() => {
     socket.on('room:joined', (data) => setJoinedData(data));
     socket.on('presentation:started', () => setIsStarted(true));
-    
-    // 서버에서 직접 넘겨주는 slideIndex로 동기화
     socket.on('slide:changed', (data) => setSlideIndex(data.slideIndex));
 
-    // 질문 상태 동기화 (PC 화면 하단 노출용)
-    socket.on('question:answer_started', (data) => setActiveQuestion(data));
-    socket.on('question:answer_ended', () => setActiveQuestion(null));
+    // ✨ 명세서 동기화: 최신 이벤트명 수신 및 nickname 접근 적용
+    socket.on('question:answering_started', (data) => setActiveQuestion(data));
+    socket.on('question:answered_list_update', () => setActiveQuestion(null)); 
     socket.on('error', (err) => alert(err.message));
 
     return () => {
       socket.off('room:joined');
       socket.off('presentation:started');
       socket.off('slide:changed');
-      socket.off('question:answer_started');
-      socket.off('question:answer_ended');
+      socket.off('question:answering_started');
+      socket.off('question:answered_list_update');
       socket.off('error');
     };
   }, []);
@@ -192,7 +188,7 @@ const DisplayView = () => {
             backgroundColor: '#007BFF', color: 'white', padding: '20px 30px', 
             borderRadius: '12px', boxShadow: '0 10px 20px rgba(0,0,0,0.2)' 
           }}>
-            <h4 style={{ margin: '0 0 10px 0', color: '#ffdd59' }}>현재 답변 중인 질문 ({activeQuestion.name})</h4>
+            <h4 style={{ margin: '0 0 10px 0', color: '#ffdd59' }}>현재 답변 중인 질문 ({activeQuestion.nickname})</h4>
             <h2 style={{ margin: 0, fontSize: '32px' }}>{activeQuestion.text}</h2>
           </div>
         )}
@@ -236,7 +232,7 @@ const AudienceView = () => {
   const [joinedData, setJoinedData] = useState(null);
   
   const [isStarted, setIsStarted] = useState(false);
-  const [localSlideIndex, setLocalSlideIndex] = useState(1); // 청중 개별 슬라이드 제어용 상태
+  const [localSlideIndex, setLocalSlideIndex] = useState(1); 
   
   const [questionText, setQuestionText] = useState('');
   const [activeQuestion, setActiveQuestion] = useState(null);
@@ -255,19 +251,20 @@ const AudienceView = () => {
   useEffect(() => {
     socket.on('room:joined', (data) => setJoinedData(data)); 
     socket.on('presentation:started', () => setIsStarted(true));
-    socket.on('error', (err) => alert(err.message)); // 질문 타이밍 위반 시 에러 알림
+    socket.on('error', (err) => alert(err.message));
     
-    // 청중용 웹페이지 상단에 답변 중인 질문 고정 및 이력 수신
-    socket.on('question:answer_started', (data) => setActiveQuestion(data));
-    socket.on('question:answer_ended', () => setActiveQuestion(null));
-    socket.on('question:answered_list_update', (data) => setAnsweredQuestions(data.answered));
+    // ✨ 명세서 동기화: 이벤트 수신 리스너 명칭 매핑 완료
+    socket.on('question:answering_started', (data) => setActiveQuestion(data));
+    socket.on('question:answered_list_update', (data) => {
+      setActiveQuestion(null);
+      setAnsweredQuestions(data.answered);
+    });
 
     return () => {
       socket.off('room:joined');
       socket.off('presentation:started');
       socket.off('error');
-      socket.off('question:answer_started');
-      socket.off('question:answer_ended');
+      socket.off('question:answering_started');
       socket.off('question:answered_list_update');
     };
   }, []);
@@ -275,7 +272,6 @@ const AudienceView = () => {
   if (isStarted) {
     return (
       <div style={{ display: 'flex', height: '100vh', backgroundColor: '#f1f2f6' }}>
-        {/* 좌측: 발표 자료 영역 (청중 독립적 제어) */}
         <div style={{ flex: 1, padding: '20px', display: 'flex', flexDirection: 'column' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
             <h3>{joinedData?.title} - 내 슬라이드 뷰어</h3>
@@ -290,15 +286,12 @@ const AudienceView = () => {
           </div>
         </div>
 
-        {/* 우측: 질문 등록 및 목록 영역 */}
         <div style={{ width: '350px', backgroundColor: 'white', borderLeft: '1px solid #ddd', display: 'flex', flexDirection: 'column' }}>
-          
-          {/* 답변 진행 중인 질문 고정 영역 */}
           {activeQuestion ? (
             <div style={{ padding: '20px', backgroundColor: '#fff3cd', borderBottom: '2px solid #ffeeba' }}>
               <h4 style={{ margin: '0 0 10px 0', color: '#856404' }}>현재 답변 중인 질문</h4>
               <p style={{ margin: 0, fontWeight: 'bold' }}>{activeQuestion.text}</p>
-              <small style={{ color: '#6c757d' }}>- {activeQuestion.name}</small>
+              <small style={{ color: '#6c757d' }}>- {activeQuestion.nickname}</small>
             </div>
           ) : (
             <div style={{ padding: '20px', backgroundColor: '#e9ecef', borderBottom: '1px solid #ddd' }}>
@@ -306,7 +299,6 @@ const AudienceView = () => {
             </div>
           )}
 
-          {/* 질문 등록 폼 */}
           <div style={{ padding: '20px', borderBottom: '1px solid #ddd' }}>
             <h4>질문 남기기</h4>
             <textarea 
@@ -320,14 +312,13 @@ const AudienceView = () => {
             </button>
           </div>
 
-          {/* 답변 완료된 질문 목록 */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '20px' }}>
             <h4>답변 완료 목록</h4>
             {answeredQuestions.length === 0 && <p style={{ color: '#999' }}>아직 답변된 질문이 없습니다.</p>}
             {answeredQuestions.map(q => (
               <div key={q.questionId} style={{ marginBottom: '15px', paddingBottom: '15px', borderBottom: '1px dashed #eee' }}>
                 <p style={{ margin: '0 0 5px 0' }}>{q.text}</p>
-                <small style={{ color: '#007BFF' }}>{q.name}</small>
+                <small style={{ color: '#007BFF' }}>{q.nickname}</small>
               </div>
             ))}
           </div>
@@ -341,7 +332,7 @@ const AudienceView = () => {
       <div style={{ textAlign: 'center', marginTop: '50px' }}>
         <h3>{joinedData.title}</h3>
         <h2>입장 완료! 발표 시작을 기다려 주세요.</h2>
-        <h3>내 이름: <span style={{ color: '#00b894' }}>{joinedData.name}</span></h3>
+        <h3>내 이름: <span style={{ color: '#00b894' }}>{joinedData.nickname}</span></h3>
       </div>
     );
   }

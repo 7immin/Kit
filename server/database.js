@@ -16,7 +16,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS rooms (
     room_id TEXT PRIMARY KEY,
     title TEXT,                                     -- 방 제목 (필수 입력)
-    host_device_id TEXT,                            -- 방장 식별자 (방 생성자, 설정 변경 권한 확인용 - 소켓 연결 기준)
+    host_user_id TEXT,                              -- 방장 식별자 (소켓 ID가 아닌 고정 user_id로 권한 확인)
     owner_account_id TEXT,                          -- 방을 생성한 회원의 계정 ID (로그인한 유저의 이전 발표 기록 조회용)
 
     -- 발급 코드
@@ -26,56 +26,66 @@ db.exec(`
 
     -- 설정값
     duration_minutes INTEGER DEFAULT 0,             -- 발표 설정 시간
-    question_identity_mode TEXT DEFAULT 'named',    -- 'named' 또는 'anonymous'
-    question_timing_mode TEXT DEFAULT 'realtime',   -- 'realtime' 또는 'post'
+    is_anonymous INTEGER DEFAULT 0,                 -- 0: 기명(named), 1: 익명(anonymous)
+    allow_mid_questions INTEGER DEFAULT 1,          -- 0: 발표 종료 후(post), 1: 실시간 허용(realtime)
 
     -- 발표 진행 상태
     file_url TEXT,                                  -- 발표 자료 URL
     script_url TEXT,                                -- 발표 대본 URL
     status TEXT DEFAULT 'wait',                     -- 'wait'(대기) -> 'progress'(발표중) -> 'end'(종료)
-    current_presenter_id TEXT,                      -- 현재 슬라이드 제어권을 가진 발표자
+    current_presenter_id TEXT,                      -- 현재 슬라이드 제어권을 가진 발표자의 고정 user_id
 
     -- 발표 기록 (발표 종료 시점에 업데이트)
-    started_at INTEGER,                             -- 발표 시작 시간 (타임스탬프)
-    ended_at INTEGER,                               -- 발표 종료 시간 (타임스탬프)
+    started_at INTEGER,                             -- 발표 시작 시간
+    ended_at INTEGER,                               -- 발표 종료 시간
     total_time_seconds INTEGER DEFAULT 0,           -- 실제 총 발표 시간 (초 단위)
 
-    -- 발표 기록(리스트업) 화면에서 보여줄 통계 데이터 저장용
-    total_presenters INTEGER DEFAULT 1,             -- 총 접속했던 발표자 수
-    total_audience INTEGER DEFAULT 0,               -- 총 접속했던 청중 수
-    presenters_list TEXT                            -- 참여한 발표자 리스트 (발표 종료 시점에 이름들을 쉼표로 연결하여 영구 저장)
+    -- 통계 데이터
+    total_presenters INTEGER DEFAULT 1,             
+    total_audience INTEGER DEFAULT 0                
+    -- presenters_list 컬럼 삭제 -> session_presenters 테이블로 대체
   );
 
-  -- 2. 유저 테이블 (현재 방에 접속한 사람들 - 연결이 끊어지면 삭제되는 임시 데이터)
+  -- 신규: 발표 기록(스냅샷)을 위한 세션 참여자 조인 테이블
+  CREATE TABLE IF NOT EXISTS session_presenters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT,                                   -- 어떤 방인지
+    account_id TEXT,                                -- 참여한 발표자의 회원 계정 ID (로그인 안 한 발표자면 null)
+    display_name_at_time TEXT,                      -- 발표 당시 사용했던 이름 (동명이인/개명 대비 스냅샷)
+    joined_at INTEGER                               -- 합류한 시간
+  );
+
+  -- 2. 유저 테이블 (현재 방에 접속한 사람들 - 임시 데이터)
   CREATE TABLE IF NOT EXISTS users (
-    user_id TEXT PRIMARY KEY,           -- 소켓 ID 또는 디바이스 ID
+    user_id TEXT PRIMARY KEY,           -- 클라이언트가 부여한 고정 ID (account_id 또는 기기 로컬 UUID)
+    socket_id TEXT,                     -- 통신을 위한 현재 소켓 ID (재연결 시 이 값만 업데이트됨)
     room_id TEXT,
-    role TEXT,                          -- 'host'(방장), 'presenter'(공동발표자), 'display'(PC), 'audience'(청중)
-    name TEXT                           -- 청중이 입장할 때 입력한 실제 이름
+    role TEXT,                          -- 'host', 'presenter', 'display', 'audience'
+    name TEXT                           -- 청중/발표자가 입장할 때 입력한 실제 이름
   );
   
-  -- 3. 슬라이드 & AI 노트 테이블 (발표 기록 조회 시 '발표자 노트' 데이터로 사용됨)
+  -- 3. 슬라이드 & AI 노트 테이블
   CREATE TABLE IF NOT EXISTS slides (
     slide_id TEXT PRIMARY KEY,
     room_id TEXT,
-    slide_index INTEGER,                -- 1, 2, 3... 슬라이드 번호
-    original_note TEXT,                 -- 사용자가 직접 입력한 원본 대본
-    ai_summary_note TEXT                -- AI가 요약/생성해 준 키워드 중심 대본, 이 컬럼의 값을 사용자가 직접 수정할 수 있게 덮어씌울 예정
+    slide_index INTEGER,                
+    original_note TEXT,                 
+    ai_summary_note TEXT                
   );
 
-  -- 4. 질문 테이블 (발표 기록 조회 시 '답변한 질문' 데이터로 사용됨)
+  -- 4. 질문 테이블
   CREATE TABLE IF NOT EXISTS questions (
     question_id INTEGER PRIMARY KEY AUTOINCREMENT,
     room_id TEXT,
-    author_name TEXT,                   -- 질문자 이름 (익명이면 랜덤 닉네임)
-    content TEXT,                       -- 질문 내용
-    created_at INTEGER,                 -- 질문 등록 시간
+    author_name TEXT,                   
+    content TEXT,                       
+    category TEXT,                      -- 'during' (발표 중) 또는 'after' (발표 후)
+    created_at INTEGER,                 
     
-    -- 발표자 답변 상태 및 권한 관련
-    status TEXT DEFAULT 'pending',      -- 현재 질문 상태: 'pending'(대기), 'answering'(답변중), 'completed'(답변완료)
-    answering_presenter_id TEXT,        -- 현재 이 질문을 답변 중인 발표자의 ID (이 사람만 '답변 종료하기'를 누를 수 있음)
-    selected_at INTEGER,                -- '답변하기' 버튼이 눌린 시간 (답변 시작 시간, 현재 답변 중인 질문 상단 고정용)
-    completed_at INTEGER                -- '답변 종료하기' 버튼이 눌린 시간 (답변 완료 목록에서 내림차순 정렬용)
+    status TEXT DEFAULT 'pending',      -- 'pending', 'answering', 'completed'
+    answering_presenter_id TEXT,        -- 소켓 ID가 아닌 고정 user_id가 들어감
+    selected_at INTEGER,                
+    completed_at INTEGER                
   );
 `);
 
