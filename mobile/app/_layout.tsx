@@ -17,6 +17,9 @@ export default function RootLayout() {
         <Stack.Screen name="remote" />
         <Stack.Screen name="questions" />
         <Stack.Screen name="history" />
+        <Stack.Screen name="note-editor" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="login" />
+        <Stack.Screen name="signup" />
       </Stack>
       <StatusBar style="auto" />
     </ThemeProvider>
