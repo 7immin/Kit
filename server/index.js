@@ -449,7 +449,9 @@ app.post('/rooms/:roomId/script', upload.single('scriptFile'), async (req, res) 
     // 않고 매 요청마다 클라이언트가 알아서 hasScript를 보내야 했는데, 그러면 대본을 업로드한
     // 사람 화면만 상태가 바뀌고 같은 방의 다른 발표자는 그 사실을 알 방법이 없었다.
     // script_url도 같이 저장해서, 발표 기록에서 원본 대본 파일을 다시 열람할 수 있게 한다.
-    db.prepare('UPDATE rooms SET has_script = 1, script_url = ? WHERE room_id = ?').run(scriptUrl, roomId);
+    // [신규] 새 대본이 올라왔으니, 이전에 "AI 요약을 이미 생성했음" 표시는 무효화한다.
+    // 이 값을 기준으로 AI 요약 버튼을 다시 눌러도 되게(재활성화) 만든다.
+    db.prepare('UPDATE rooms SET has_script = 1, script_url = ?, ai_notes_generated = 0 WHERE room_id = ?').run(scriptUrl, roomId);
 
     // [수정] slideNotes에 imageUrl이 없어서, 이 이벤트/응답만 보고 노트 수정 화면을 그리면
     // 슬라이드 이미지 없이 텍스트만 나오는 문제가 있었음. DB에 이미 저장된 image_url을 붙여준다.
@@ -458,12 +460,13 @@ app.post('/rooms/:roomId/script', upload.single('scriptFile'), async (req, res) 
     const slideNotesWithImages = slideNotes.map(note => ({ ...note, imageUrl: imageUrlBySlideIndex[note.slideIndex] || null }));
 
     // [수정] hasScript를 이벤트에 실어서, 같은 방의 다른 발표자 화면도 "대본 업로드됨" 상태로 동기화되게 함
-    io.to(roomId).emit(EVENTS.NOTES_READY, { slideNotes: slideNotesWithImages, source: 'ai_context_split', hasScript: true });
+    // [신규] aiNotesGenerated: false도 실어서, 다른 발표자 화면의 "AI 요약" 버튼도 같이 재활성화되게 함
+    io.to(roomId).emit(EVENTS.NOTES_READY, { slideNotes: slideNotesWithImages, source: 'ai_context_split', hasScript: true, aiNotesGenerated: false });
     console.log(`[DEBUG: /script] 프론트엔드로 소켓 이벤트(NOTES_READY) 방출 완료`);
 
     // DB에서 가져온 정확한 slideCount를 프론트엔드에 응답합니다.
     // slideNotes도 같이 실어서, 소켓 재연결로 NOTES_READY를 놓쳐도 REST 응답만으로 화면을 갱신할 수 있게 함.
-    const responsePayload = { success: true, message: '대본 AI 매칭 완료', slideCount: slideCount, hasScript: true, slideNotes: slideNotesWithImages }
+    const responsePayload = { success: true, message: '대본 AI 매칭 완료', slideCount: slideCount, hasScript: true, aiNotesGenerated: false, slideNotes: slideNotesWithImages }
     res.json(responsePayload);
     console.log(`[DEBUG: /script] 프론트엔드로 응답 전송:`, responsePayload);
 
@@ -483,7 +486,7 @@ app.post('/rooms/:roomId/slides/note/ai', async (req, res) => {
   const { roomId } = req.params;
 
   try {
-    const room = db.prepare('SELECT has_script FROM rooms WHERE room_id = ?').get(roomId);
+    const room = db.prepare('SELECT has_script, ai_notes_generated FROM rooms WHERE room_id = ?').get(roomId);
     if (!room) {
       return res.status(404).json({ success: false, message: '방을 찾을 수 없습니다.' });
     }
@@ -492,6 +495,14 @@ app.post('/rooms/:roomId/slides/note/ai', async (req, res) => {
     // 클라이언트가 잘못 알고 있으면(다른 발표자가 방금 대본을 올린 걸 모르는 등) 빈 원문을
     // 요약하려 들거나, 반대로 실제 있는 대본을 무시하는 문제가 생길 수 있었다.
     const hasScript = !!room.has_script;
+
+    // [신규] 같은 대본/자료 기준으로 이미 AI 노트를 생성했다면 다시 호출하지 못하게 막는다.
+    // 버튼 연타나 여러 발표자의 중복 클릭으로 Gemini 무료 티어 분당 호출 한도를 불필요하게
+    // 낭비하는 걸 막기 위함. 새 대본을 업로드하면(POST /rooms/:roomId/script) 이 값이
+    // 다시 0으로 풀린다.
+    if (room.ai_notes_generated) {
+      return res.status(409).json({ success: false, message: '이미 이 대본 기준으로 AI 노트를 생성했습니다. 다시 생성하려면 대본을 새로 업로드해주세요.' });
+    }
 
     const slides = db.prepare('SELECT * FROM slides WHERE room_id = ? ORDER BY slide_index ASC').all(roomId);
 
@@ -582,10 +593,13 @@ app.post('/rooms/:roomId/slides/note/ai', async (req, res) => {
 
     resolvedAiNotes.sort((a, b) => a.slideIndex - b.slideIndex);
 
-    const source = hasScript ? 'ai_summarize' : 'ai_generate';
-    io.to(roomId).emit(EVENTS.NOTES_READY, { slideNotes: resolvedAiNotes, source, hasScript });
+    // [신규] 성공적으로 생성했으니, 같은 대본 기준으로는 다시 호출 못 하도록 표시해둔다.
+    db.prepare('UPDATE rooms SET ai_notes_generated = 1 WHERE room_id = ?').run(roomId);
 
-    res.json({ success: true, message: 'Gemini AI 처리 완료', slideNotes: resolvedAiNotes, hasScript });
+    const source = hasScript ? 'ai_summarize' : 'ai_generate';
+    io.to(roomId).emit(EVENTS.NOTES_READY, { slideNotes: resolvedAiNotes, source, hasScript, aiNotesGenerated: true });
+
+    res.json({ success: true, message: 'Gemini AI 처리 완료', slideNotes: resolvedAiNotes, hasScript, aiNotesGenerated: true });
 
   } catch (error) {
     console.error('AI 처리 중 에러:', error);
@@ -628,6 +642,7 @@ app.get('/rooms/:roomId', (req, res) => {
       allowMidQuestions: !!room.allow_mid_questions,
       fileUrl: room.file_url,
       hasScript: !!room.has_script,
+      aiNotesGenerated: !!room.ai_notes_generated,
       scriptUrl: room.script_url,
       currentSlideIndex: roomSlides[roomId] || 1,
       startedAt: room.started_at
@@ -955,10 +970,13 @@ io.on('connection', (socket) => {
     });
     copySlides();
 
+    // [신규] 복사해온 슬라이드에 이미 ai_summary_note가 들어있는 상태이므로(= 이 대본 기준으로는
+    // 이미 AI 노트가 만들어져 있는 것과 동일한 상태), 새 방도 ai_notes_generated를 원본 그대로
+    // 이어받는다. 그래야 실제로는 노트가 이미 있는데 버튼만 "생성 가능"으로 보이는 모순이 안 생긴다.
     db.prepare(`
-      INSERT INTO rooms (room_id, title, host_user_id, current_presenter_id, presenter_code, display_code, audience_code, status, owner_account_id, file_url, has_script, script_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'wait', ?, ?, ?, ?)
-    `).run(roomId, title, userId, userId, presenterCode, displayCode, audienceCode, userId, fileUrl, sourceRoom.has_script, scriptUrl);
+      INSERT INTO rooms (room_id, title, host_user_id, current_presenter_id, presenter_code, display_code, audience_code, status, owner_account_id, file_url, has_script, script_url, ai_notes_generated)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'wait', ?, ?, ?, ?, ?)
+    `).run(roomId, title, userId, userId, presenterCode, displayCode, audienceCode, userId, fileUrl, sourceRoom.has_script, scriptUrl, sourceRoom.ai_notes_generated);
 
     upsertUser(userId, socket.id, roomId, 'host', account.name);
     recordParticipant(roomId, userId, account.accountId, 'host', account.name);
@@ -977,7 +995,7 @@ io.on('connection', (socket) => {
       text: s.ai_summary_note || '',
       imageUrl: s.image_url ? `/files/${roomId}_slide_${s.slide_index}.png` : null
     }));
-    io.to(roomId).emit(EVENTS.NOTES_READY, { slideNotes, source: 'manual', hasScript: !!sourceRoom.has_script });
+    io.to(roomId).emit(EVENTS.NOTES_READY, { slideNotes, source: 'manual', hasScript: !!sourceRoom.has_script, aiNotesGenerated: !!sourceRoom.ai_notes_generated });
 
     broadcastPresenterList(roomId);
   });
@@ -1021,7 +1039,8 @@ io.on('connection', (socket) => {
       audienceCode: null,
       currentFileUrl: room.file_url || null,
       slideCount,
-      hasScript: !!room.has_script
+      hasScript: !!room.has_script,
+      aiNotesGenerated: !!room.ai_notes_generated
     });
     broadcastPresenterList(roomId);
   });
