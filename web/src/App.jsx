@@ -143,6 +143,16 @@ const HomeView = () => {
     setHistoryDetail(data.success ? data.history : { error: data.message });
   };
 
+  // [테스트용] 발표 기록 삭제 — 내 목록에서만 숨김(실제 방/자료는 안 지움)
+  const handleDeleteHistory = async (roomId) => {
+    await fetch(`${API_BASE}/rooms/${roomId}/history`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${auth.token}` },
+    });
+    setHistoryRooms((prev) => (prev || []).filter((r) => r.roomId !== roomId));
+    if (historyDetail?.roomId === roomId) setHistoryDetail(null);
+  };
+
   // [테스트용] 이전 발표 기록의 자료/노트를 그대로 복사해 새 방으로 다시 발표하기
   const handleReplayFromHistory = (sourceRoomId, originalTitle) => {
     socket.emit('room:create_from_history', {
@@ -301,8 +311,11 @@ const HomeView = () => {
                         </button>
                         {' '}— 총 {r.totalTimeSeconds}초, 발표자 {r.totalPresenters}명, 청중 {r.totalAudience}명
                         {' '}
-                        <button onClick={() => handleReplayFromHistory(r.roomId, r.title)} style={{ cursor: 'pointer', padding: '2px 8px', fontSize: '12px', backgroundColor: '#6c5ce7', color: 'white', border: 'none', borderRadius: '4px' }}>
+                        <button onClick={() => handleReplayFromHistory(r.roomId, r.title)} style={{ cursor: 'pointer', padding: '2px 8px', fontSize: '12px', backgroundColor: '#6c5ce7', color: 'white', border: 'none', borderRadius: '4px', marginRight: '4px' }}>
                           다시 발표하기
+                        </button>
+                        <button onClick={() => handleDeleteHistory(r.roomId)} style={{ cursor: 'pointer', padding: '2px 8px', fontSize: '12px', backgroundColor: '#d63031', color: 'white', border: 'none', borderRadius: '4px' }}>
+                          삭제
                         </button>
                       </li>
                     ))}
@@ -555,7 +568,7 @@ const DisplayView = () => {
     });
     socket.on('slide:changed', (data) => setSlideIndex(data.slideIndex));
 
-    // ✨ 명세서 동기화: 최신 이벤트명 수신 및 nickname 접근 적용
+    // 명세서 동기화: 최신 이벤트명 수신 및 nickname 접근 적용
     socket.on('question:answering_started', (data) => setActiveQuestion(data));
     socket.on('question:answered_list_update', () => setActiveQuestion(null));
     socket.on('error', (err) => alert(err.message));
@@ -710,7 +723,7 @@ const AudienceView = () => {
     });
     socket.on('error', (err) => alert(err.message));
     
-    // ✨ 명세서 동기화: 이벤트 수신 리스너 명칭 매핑 완료
+    // 명세서 동기화: 이벤트 수신 리스너 명칭 매핑 완료
     socket.on('question:answering_started', (data) => {
       setActiveQuestion(data);
       setQuestions((prev) => prev.map(q => q.questionId === data.questionId ? { ...q, status: 'answering' } : q));
@@ -824,7 +837,7 @@ const AudienceView = () => {
                 }}
                 placeholder="궁금한 점을 입력해주세요"
                 disabled={!canAskQuestion}
-                style={{ flex: 1, height: '44px', padding: '10px', boxSizing: 'border-box', resize: 'none', backgroundColor: canAskQuestion ? 'white' : '#f1f2f6', borderRadius: '8px', border: '1px solid #ddd' }}
+                style={{ flex: 1, height: '44px', padding: '10px', boxSizing: 'border-box', resize: 'none', backgroundColor: canAskQuestion ? 'white' : '#f1f2f6', color: '#000', borderRadius: '8px', border: '1px solid #ddd' }}
               />
               <button
                 onClick={handleSubmitQuestion}

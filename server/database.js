@@ -56,6 +56,31 @@ db.exec(`
     joined_at INTEGER                               -- 합류한 시간
   );
 
+  -- [신규] 방에 "한 번이라도" 들어왔던 사람을 전부 남겨두는 테이블. users 테이블은 연결이 끊기면
+  -- 행이 삭제되기 때문에, 발표 종료 시점에 users만 보고 "총 발표자/청중 수"나 "누가 참여했는지"를
+  -- 계산하면 중간에 나갔다 들어온 사람이 통째로 빠지는 문제가 있었다. 입장하는 순간 바로 기록해서
+  -- 발표가 끝날 때 이 테이블만 보면 정확한 참여 이력을 알 수 있게 한다.
+  CREATE TABLE IF NOT EXISTS room_participants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT,
+    user_id TEXT,
+    account_id TEXT,                                -- 로그인 안 했으면 null
+    role TEXT,                                       -- 'host' | 'presenter' | 'audience' (display는 집계 대상 아님)
+    display_name_at_time TEXT,
+    first_joined_at INTEGER,
+    UNIQUE(room_id, user_id)
+  );
+
+  -- [신규] "발표 기록 삭제"용 — 실제로 방/자료를 지우지는 않고, 이 계정의 "이전 발표 기록"
+  -- 목록에서만 숨긴다. 같은 방이 여러 발표자의 개인 기록에 동시에 나타날 수 있어서, 한 명이
+  -- 지운다고 다른 참여자의 기록까지 같이 사라지면 안 되기 때문에 계정별로 숨김 처리한다.
+  CREATE TABLE IF NOT EXISTS hidden_history (
+    room_id TEXT,
+    account_id TEXT,
+    hidden_at INTEGER,
+    UNIQUE(room_id, account_id)
+  );
+
   -- 2. 유저 테이블 (현재 방에 접속한 사람들 - 임시 데이터)
   CREATE TABLE IF NOT EXISTS users (
     user_id TEXT PRIMARY KEY,           -- 클라이언트가 부여한 고정 ID (account_id 또는 기기 로컬 UUID)

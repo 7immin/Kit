@@ -335,15 +335,24 @@ app.post('/rooms/:roomId/script', upload.single('scriptFile'), async (req, res) 
 
     const pdfBase64 = fs.readFileSync(savedPdfPath).toString("base64");
     const ext = path.extname(req.file.originalname).toLowerCase();
-    let fullScript = '';
 
-    if (ext === '.docx') {
-      const result = await mammoth.extractRawText({ path: scriptFilePath });
-      fullScript = result.value;
-    } else if (ext === '.txt') {
-      fullScript = fs.readFileSync(scriptFilePath, 'utf-8');
-    } else {
+    if (ext !== '.docx' && ext !== '.txt') {
       return res.status(400).json({ success: false, message: '지원하지 않는 대본 파일 형식입니다. (DOCX, TXT만 가능)' });
+    }
+
+    // [수정] 예전엔 텍스트만 뽑고 원본 파일은 버렸음(finally에서 삭제). 그래서 "발표 기록"에
+    // 대본 원문 파일 자체가 하나도 안 남았다. PDF와 같은 방식으로 방 이름을 붙여 영구 보관한다.
+    const savedScriptPath = path.join(UPLOAD_DIR, `${roomId}_script${ext}`);
+    if (fs.existsSync(savedScriptPath)) fs.unlinkSync(savedScriptPath); // 재업로드 시 이전 파일 정리
+    fs.renameSync(scriptFilePath, savedScriptPath);
+    const scriptUrl = `/files/${roomId}_script${ext}`;
+
+    let fullScript = '';
+    if (ext === '.docx') {
+      const result = await mammoth.extractRawText({ path: savedScriptPath });
+      fullScript = result.value;
+    } else {
+      fullScript = fs.readFileSync(savedScriptPath, 'utf-8');
     }
 
     console.log(`[DEBUG: /script] 텍스트 추출 완료! (총 글자 수: ${fullScript.length}자)`);
@@ -416,7 +425,8 @@ app.post('/rooms/:roomId/script', upload.single('scriptFile'), async (req, res) 
     // [수정] "대본이 있다"는 사실을 방 상태로 저장한다. 예전엔 이 값이 서버 어디에도 저장되지
     // 않고 매 요청마다 클라이언트가 알아서 hasScript를 보내야 했는데, 그러면 대본을 업로드한
     // 사람 화면만 상태가 바뀌고 같은 방의 다른 발표자는 그 사실을 알 방법이 없었다.
-    db.prepare('UPDATE rooms SET has_script = 1 WHERE room_id = ?').run(roomId);
+    // script_url도 같이 저장해서, 발표 기록에서 원본 대본 파일을 다시 열람할 수 있게 한다.
+    db.prepare('UPDATE rooms SET has_script = 1, script_url = ? WHERE room_id = ?').run(scriptUrl, roomId);
 
     // [수정] slideNotes에 imageUrl이 없어서, 이 이벤트/응답만 보고 노트 수정 화면을 그리면
     // 슬라이드 이미지 없이 텍스트만 나오는 문제가 있었음. DB에 이미 저장된 image_url을 붙여준다.
@@ -553,6 +563,7 @@ app.get('/rooms/:roomId', (req, res) => {
       allowMidQuestions: !!room.allow_mid_questions,
       fileUrl: room.file_url,
       hasScript: !!room.has_script,
+      scriptUrl: room.script_url,
       currentSlideIndex: roomSlides[roomId] || 1,
       startedAt: room.started_at
     }
@@ -587,8 +598,11 @@ app.get('/rooms/:roomId/questions', (req, res) => {
   // [수정] 예전엔 상태와 무관하게 created_at(등록 순서)로만 정렬해서, 이걸로 "답변한 질문 목록"을
   // 복구하면(재연결 등) 실시간 소켓(question:answered_list_update, completed_at 기준)과
   // 순서가 달라졌음. completed 항목은 completed_at, 나머지는 created_at 기준으로 맞춘다.
+  // [수정] category가 SELECT에 없어서 항상 undefined로 내려가고 있었음. 실시간 소켓 이벤트
+  // (question:new)는 category를 포함해서 오는데, 발표 종료 후 화면이 이 REST로 다시 조회하면
+  // category가 비어서, 그 값 기준으로 필터링하는 화면에서는 질문이 전부 안 보이는 문제가 있었다.
   const questions = db.prepare(`
-    SELECT question_id as questionId, content as text, author_name as nickname, status, created_at as createdAt, selected_at as answeredAt, completed_at as completedAt
+    SELECT question_id as questionId, content as text, author_name as nickname, category, status, created_at as createdAt, selected_at as answeredAt, completed_at as completedAt
     FROM questions WHERE room_id = ? ORDER BY COALESCE(completed_at, created_at) DESC
   `).all(roomId);
 
@@ -617,17 +631,46 @@ app.get('/accounts/me/rooms', (req, res) => {
     return res.status(401).json({ success: false, message: '로그인이 필요합니다.' });
   }
 
+  // [수정] 이 계정이 "삭제"(숨김) 처리한 방은 목록에서 제외한다.
   const rooms = db.prepare(`
     SELECT DISTINCT r.room_id as roomId, r.title, r.ended_at as endedAt,
-           r.total_time_seconds as totalTimeSeconds, r.total_presenters as totalPresenters,
-           r.total_audience as totalAudience
+           r.total_time_seconds as totalTimeSeconds, r.duration_minutes as durationMinutes,
+           r.total_presenters as totalPresenters, r.total_audience as totalAudience
     FROM rooms r
     LEFT JOIN session_presenters sp ON sp.room_id = r.room_id
     WHERE r.status = 'end' AND (r.owner_account_id = ? OR sp.account_id = ?)
+      AND r.room_id NOT IN (SELECT room_id FROM hidden_history WHERE account_id = ?)
     ORDER BY r.ended_at DESC
-  `).all(account.accountId, account.accountId);
+  `).all(account.accountId, account.accountId, account.accountId);
 
   res.json({ success: true, rooms });
+});
+
+// [신규] 발표 기록 삭제 — 실제 방/자료는 그대로 두고, 이 계정의 "이전 발표 기록" 목록에서만
+// 숨긴다. 같은 방이 여러 발표자의 개인 기록에 동시에 나타날 수 있어서, 한 명이 지운다고
+// 다른 참여자(또는 방장)의 기록까지 같이 사라지면 안 되기 때문.
+app.delete('/rooms/:roomId/history', (req, res) => {
+  const { roomId } = req.params;
+  const account = getAuthAccount(req);
+  if (!account) {
+    return res.status(401).json({ success: false, message: '로그인이 필요합니다.' });
+  }
+
+  const room = db.prepare('SELECT owner_account_id FROM rooms WHERE room_id = ?').get(roomId);
+  if (!room) {
+    return res.status(404).json({ success: false, message: '방을 찾을 수 없습니다.' });
+  }
+
+  const isParticipant = room.owner_account_id === account.accountId ||
+    !!db.prepare('SELECT 1 FROM session_presenters WHERE room_id = ? AND account_id = ?').get(roomId, account.accountId);
+  if (!isParticipant) {
+    return res.status(403).json({ success: false, message: '이 발표 기록을 삭제할 권한이 없습니다.' });
+  }
+
+  db.prepare('INSERT OR IGNORE INTO hidden_history (room_id, account_id, hidden_at) VALUES (?, ?, ?)')
+    .run(roomId, account.accountId, Date.now());
+
+  res.json({ success: true });
 });
 
 // [신규] 발표 기록 상세 — 발표 자료, 대본/발표자 노트(슬라이드별), 답변한 질문, 총 발표 시간,
@@ -676,7 +719,9 @@ app.get('/rooms/:roomId/history', (req, res) => {
       title: room.title,
       fileUrl: room.file_url,
       hasScript: !!room.has_script,
+      scriptUrl: room.script_url,
       totalTimeSeconds: room.total_time_seconds,
+      durationMinutes: room.duration_minutes,
       startedAt: room.started_at,
       endedAt: room.ended_at,
       presenters,
@@ -704,6 +749,16 @@ function upsertUser(userId, socketId, roomId, role, name) {
       role = excluded.role,
       name = excluded.name
   `).run(userId, socketId, roomId, role, name, Date.now());
+}
+
+// [신규] "이 방에 이 사람이 들어온 적 있다"를 영구히 남긴다. users 테이블은 연결 끊기면 행이
+// 지워지므로, 발표 종료 시점의 총 발표자/청중 수·참여자 목록을 users만 보고 계산하면 중간에
+// 나갔다 들어온 사람이 빠진다. UNIQUE(room_id, user_id)라서 같은 사람이 재입장해도 중복 안 됨.
+function recordParticipant(roomId, userId, accountId, role, name) {
+  db.prepare(`
+    INSERT OR IGNORE INTO room_participants (room_id, user_id, account_id, role, display_name_at_time, first_joined_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(roomId, userId, accountId, role, name, Date.now());
 }
 
 function broadcastPresenterList(roomId) {
@@ -752,6 +807,7 @@ io.on('connection', (socket) => {
     stmt.run(roomId, title, userId, userId, presenterCode, displayCode, audienceCode, ownerAccountId);
 
     upsertUser(userId, socket.id, roomId, 'host', displayName);
+    recordParticipant(roomId, userId, ownerAccountId, 'host', displayName);
 
     socket.join(roomId);
     socket.emit(EVENTS.ROOM_CREATED, { roomId, title, displayCode, audienceCode, presenterCode, userId });
@@ -802,6 +858,18 @@ io.on('connection', (socket) => {
       fileUrl = `/files/${roomId}_presentation.pdf`;
     }
 
+    // [신규] 대본 원본 파일도 있으면 같이 복사 (script_url)
+    let scriptUrl = null;
+    if (sourceRoom.script_url) {
+      const scriptExt = path.extname(sourceRoom.script_url);
+      const sourceScriptPath = path.join(UPLOAD_DIR, path.basename(sourceRoom.script_url));
+      const newScriptPath = path.join(UPLOAD_DIR, `${roomId}_script${scriptExt}`);
+      if (fs.existsSync(sourceScriptPath)) {
+        fs.copyFileSync(sourceScriptPath, newScriptPath);
+        scriptUrl = `/files/${roomId}_script${scriptExt}`;
+      }
+    }
+
     // 슬라이드별 이미지 + 노트(원본 대본/발표자 노트) 복사
     const insertSlide = db.prepare(
       'INSERT INTO slides (slide_id, room_id, slide_index, original_note, ai_summary_note, image_url) VALUES (?, ?, ?, ?, ?, ?)'
@@ -823,11 +891,12 @@ io.on('connection', (socket) => {
     copySlides();
 
     db.prepare(`
-      INSERT INTO rooms (room_id, title, host_user_id, current_presenter_id, presenter_code, display_code, audience_code, status, owner_account_id, file_url, has_script)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'wait', ?, ?, ?)
-    `).run(roomId, title, userId, userId, presenterCode, displayCode, audienceCode, userId, fileUrl, sourceRoom.has_script);
+      INSERT INTO rooms (room_id, title, host_user_id, current_presenter_id, presenter_code, display_code, audience_code, status, owner_account_id, file_url, has_script, script_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'wait', ?, ?, ?, ?)
+    `).run(roomId, title, userId, userId, presenterCode, displayCode, audienceCode, userId, fileUrl, sourceRoom.has_script, scriptUrl);
 
     upsertUser(userId, socket.id, roomId, 'host', account.name);
+    recordParticipant(roomId, userId, account.accountId, 'host', account.name);
     socket.join(roomId);
 
     socket.emit(EVENTS.ROOM_CREATED, { roomId, title, displayCode, audienceCode, presenterCode, userId });
@@ -868,6 +937,7 @@ io.on('connection', (socket) => {
     const role = userId === room.host_user_id ? 'host' : 'presenter';
 
     upsertUser(userId, socket.id, roomId, role, displayName);
+    recordParticipant(roomId, userId, account ? account.accountId : null, role, displayName);
 
     socket.join(roomId);
 
@@ -924,6 +994,7 @@ io.on('connection', (socket) => {
     // [수정] 청중도 같은 userId를 재사용하도록 통일 — 새로고침/재연결돼도 같은 신원으로 인식됨
     const userId = clientUserId || generateUserId();
     upsertUser(userId, socket.id, room.room_id, 'audience', name);
+    recordParticipant(room.room_id, userId, null, 'audience', name);
 
     socket.join(room.room_id);
     // [수정] status/allowMidQuestions가 없어서, 발표가 이미 시작된 뒤에 들어온(QR로 늦게 스캔한)
@@ -1003,34 +1074,40 @@ io.on('connection', (socket) => {
   });
 
   socket.on(EVENTS.PRESENTATION_END, () => {
+    // [수정] 아래 두 가드가 조용히 return만 해서, "현재 발표자"가 아닌 사람이 눌렀을 때
+    // (예: 발표자 교체 후 UI가 안 바뀐 경우) 아무 반응이 없어 "종료가 안 된다"로 보였다.
     const user = db.prepare('SELECT user_id, room_id FROM users WHERE socket_id = ?').get(socket.id);
-    if (!user) return;
+    if (!user) {
+      return socket.emit('error', { message: '서버가 이 연결의 신원을 찾지 못했습니다. 재입장해 주세요.' });
+    }
 
     // [수정] current_presenter_id만으로 찾으면 같은 userId를 가진 다른(예: 오래된 테스트) 방과
     // 혼동될 수 있음. 이 소켓이 실제로 join한 room_id로 좁혀서 정확한 방만 종료시킨다.
     const room = db.prepare('SELECT * FROM rooms WHERE room_id = ? AND current_presenter_id = ?').get(user.room_id, user.user_id);
-    if (!room || !room.started_at) return;
+    if (!room || !room.started_at) {
+      return socket.emit('error', { message: '발표를 종료할 수 없습니다. 현재 발표자가 아니거나, 아직 시작되지 않은 발표입니다.' });
+    }
 
     const endTime = Date.now();
     const totalElapsedSeconds = Math.floor((endTime - room.started_at) / 1000);
 
-    const presenterCount = db.prepare("SELECT COUNT(*) as c FROM users WHERE room_id = ? AND role IN ('host', 'presenter')").get(room.room_id).c;
-    const audienceCount = db.prepare("SELECT COUNT(*) as c FROM users WHERE room_id = ? AND role = 'audience'").get(room.room_id).c;
+    // [수정] 발표 도중 나갔다 들어온 사람이 있으면, 그 순간 연결돼 있는 users만 세서는
+    // 총 발표자/청중 수가 실제보다 적게 나왔다. room_participants는 "한 번이라도 들어온
+    // 사람"을 전부 남겨두므로(연결이 끊겨도 안 지워짐), 여기서 집계해야 정확하다.
+    const presenterCount = db.prepare("SELECT COUNT(*) as c FROM room_participants WHERE room_id = ? AND role IN ('host', 'presenter')").get(room.room_id).c;
+    const audienceCount = db.prepare("SELECT COUNT(*) as c FROM room_participants WHERE room_id = ? AND role = 'audience'").get(room.room_id).c;
 
     db.prepare(`UPDATE rooms SET status = 'end', ended_at = ?, total_time_seconds = ?, total_presenters = ?, total_audience = ? WHERE room_id = ?`)
       .run(endTime, totalElapsedSeconds, presenterCount, audienceCount, room.room_id);
 
-    // [수정] joined_at에 Date.now()(=종료 시각)를 넣고 있던 버그.
-    // users 테이블에 실제 입장 시각을 저장해두므로 그 값을 그대로 스냅샷에 옮긴다.
-    const presenters = db.prepare("SELECT user_id, name, joined_at FROM users WHERE room_id = ? AND role IN ('host', 'presenter')").all(room.room_id);
+    // [수정] 예전엔 (그 순간 연결돼 있는) users 테이블에서 발표자 목록을 뽑았기 때문에,
+    // 발표 종료 전에 앱을 끄거나 연결이 끊긴 발표자는 "기록"에서 통째로 빠졌다 — 이게
+    // "방장한테만 기록이 남는다"는 증상의 원인이었다. room_participants는 입장하는 순간
+    // 바로 남기므로, 끝까지 연결돼 있었는지와 무관하게 참여했던 모든 발표자가 남는다.
+    const presenters = db.prepare("SELECT user_id, account_id, display_name_at_time as name, first_joined_at as joinedAt FROM room_participants WHERE room_id = ? AND role IN ('host', 'presenter')").all(room.room_id);
     const insertSession = db.prepare("INSERT INTO session_presenters (room_id, account_id, display_name_at_time, joined_at) VALUES (?, ?, ?, ?)");
-    // [수정] 로그인한 발표자는 users.user_id가 곧 accounts.account_id이므로(ROOM_CREATE/ROOM_JOIN_PRESENTER
-    // 참고), accounts 테이블에 실제로 존재하는 id인지만 확인하면 "이 발표자가 로그인 상태였는지"를
-    // 알 수 있다. 비로그인 발표자는 account_id를 null로 남겨서 "이전 발표 기록" 조회에서 자연히 제외된다.
-    const findAccount = db.prepare('SELECT account_id FROM accounts WHERE account_id = ?');
     for (const p of presenters) {
-      const account = findAccount.get(p.user_id);
-      insertSession.run(room.room_id, account ? account.account_id : null, p.name || '발표자', p.joined_at || Date.now());
+      insertSession.run(room.room_id, p.account_id, p.name || '발표자', p.joinedAt || Date.now());
     }
 
     io.to(room.room_id).emit(EVENTS.PRESENTATION_ENDED, { totalElapsedSeconds, presenterCount, audienceCount });
