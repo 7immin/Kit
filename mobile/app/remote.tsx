@@ -3,10 +3,16 @@ import { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, Modal, Alert } from 'react-native';
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
-import { socket, SERVER_URL } from '../lib/socket';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { runOnJS } from 'react-native-reanimated';
+import { socket } from '../lib/socket';
 import { EVENTS } from '../../shared/events';
 import { useKitStore, type Presenter } from '../store/useKitStore';
 import { colors, radius } from '../constants/theme';
+
+// 스와이프로 슬라이드를 넘기려면 이만큼 이상 가로로 밀려야 "탭"이 아니라 "스와이프"로 인정함
+const SWIPE_DISTANCE_THRESHOLD = 50;
+const SWIPE_VELOCITY_THRESHOLD = 400;
 
 function useIsCurrentPresenter() {
   return useKitStore((s) => {
@@ -41,9 +47,9 @@ function QuestionBell() {
 }
 
 function SlidePreview() {
-  const roomId = useKitStore((s) => s.roomId);
   const currentSlideIndex = useKitStore((s) => s.currentSlideIndex);
   const slideCount = useKitStore((s) => s.slideCount);
+  const imageUrl = useKitStore((s) => s.slideImages[s.currentSlideIndex]);
   const isCurrentPresenter = useIsCurrentPresenter();
   const [imageFailed, setImageFailed] = useState(false);
 
@@ -57,27 +63,28 @@ function SlidePreview() {
     socket.emit(EVENTS.SLIDE_NEXT, {});
   };
 
-  // TODO: 이미지 변환 API 확정 전까지의 가정 경로. B가 실제 엔드포인트를 알려주면 URL만 바꾸면 됨.
-  const imageUrl = `${SERVER_URL}/rooms/${roomId}/slides/${currentSlideIndex}/image`;
-
   return (
-    <Pressable
-      style={[styles.slideFrame, !isCurrentPresenter && styles.slideFrameReadonly]}
-      onPress={handlePress}
-    >
-      <Text style={styles.slideIdx}>SLIDE {currentSlideIndex} / {slideCount || '-'}</Text>
-      {!imageFailed ? (
-        <Image
-          source={{ uri: imageUrl }}
-          style={StyleSheet.absoluteFillObject}
-          contentFit="contain"
-          onError={() => setImageFailed(true)}
-        />
-      ) : (
-        <Text style={styles.slideTitle}>슬라이드 미리보기 준비 중</Text>
-      )}
-      {isCurrentPresenter && <Text style={styles.slideHint}>탭하면 다음 슬라이드로 넘어가요</Text>}
-    </Pressable>
+    <View>
+      <View style={styles.slideIdxRow}>
+        <Text style={styles.slideIdx}>SLIDE {currentSlideIndex} / {slideCount || '-'}</Text>
+      </View>
+      <Pressable
+        style={[styles.slideFrame, !isCurrentPresenter && styles.slideFrameReadonly]}
+        onPress={handlePress}
+      >
+        {imageUrl && !imageFailed ? (
+          <Image
+            source={{ uri: imageUrl }}
+            style={StyleSheet.absoluteFillObject}
+            contentFit="contain"
+            contentPosition="center"
+            onError={() => setImageFailed(true)}
+          />
+        ) : (
+          <Text style={styles.slideTitle}>슬라이드 미리보기 준비 중</Text>
+        )}
+      </Pressable>
+    </View>
   );
 }
 
@@ -242,20 +249,57 @@ export default function RemoteScreen() {
   const presenters = useKitStore((s) => s.presenters);
   const presenterName = presenters.find((p) => p.isCurrentPresenter)?.name ?? '발표자';
 
-  return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerEyebrow}>{isCurrentPresenter ? '발표 진행 중' : `${presenterName}님 발표 중`}</Text>
-        <View style={{ flex: 1 }} />
-        <QuestionBell />
-      </View>
+  // 왼쪽으로 스와이프 = 다음 슬라이드, 오른쪽으로 스와이프 = 이전 슬라이드
+  // (아이폰 뒤로가기 제스처처럼, 화면 어디서든 손가락으로 밀면 넘어감)
+  const goNext = () => {
+    const { currentSlideIndex, slideCount } = useKitStore.getState();
+    if (slideCount > 0 && currentSlideIndex >= slideCount) return;
+    socket.emit(EVENTS.SLIDE_NEXT, {});
+  };
+  const goPrev = () => {
+    const { currentSlideIndex } = useKitStore.getState();
+    if (currentSlideIndex <= 1) {
+      // 첫 슬라이드보다 더 앞으로 넘기려는 스와이프 = "발표 시작 취소" 의도로 간주
+      Alert.alert('발표 준비 화면으로 돌아갈까요?', '진행 중인 발표가 취소되고, 모든 화면이 시작 전 상태로 돌아가요.', [
+        { text: '취소', style: 'cancel' },
+        { text: '돌아가기', style: 'destructive', onPress: () => socket.emit(EVENTS.PRESENTATION_CANCEL, {}) },
+      ]);
+      return;
+    }
+    socket.emit(EVENTS.SLIDE_PREV, {});
+  };
 
-      <SlidePreview />
-      <TimerBar />
-      <NavButtons />
-      <NotesBlock />
-      <BottomActions />
-    </View>
+  const swipeGesture = Gesture.Pan()
+    .activeOffsetX([-20, 20])
+    .failOffsetY([-20, 20])
+    .onEnd((e) => {
+      if (!isCurrentPresenter) return;
+      const distanceOk = Math.abs(e.translationX) > SWIPE_DISTANCE_THRESHOLD;
+      const velocityOk = Math.abs(e.velocityX) > SWIPE_VELOCITY_THRESHOLD;
+      if (!distanceOk && !velocityOk) return;
+      if (e.translationX < 0) {
+        runOnJS(goNext)();
+      } else {
+        runOnJS(goPrev)();
+      }
+    });
+
+  return (
+    <GestureDetector gesture={swipeGesture}>
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.headerEyebrow}>{isCurrentPresenter ? '발표 진행 중' : `${presenterName}님 발표 중`}</Text>
+          <View style={{ flex: 1 }} />
+          <QuestionBell />
+        </View>
+
+        <SlidePreview />
+        <TimerBar />
+        <NavButtons />
+        <NotesBlock />
+        <BottomActions />
+      </View>
+    </GestureDetector>
   );
 }
 
@@ -276,19 +320,15 @@ const styles = StyleSheet.create({
   },
   badgeText: { color: colors.alertInk, fontSize: 10, fontWeight: '800' },
 
+  slideIdxRow: { marginHorizontal: 20, marginTop: 12, alignItems: 'flex-end' },
+  slideIdx: { fontSize: 11, color: colors.inkFaint, fontWeight: '600' },
   slideFrame: {
-    aspectRatio: 16 / 9, marginHorizontal: 20, marginTop: 12, borderRadius: radius.lg,
+    aspectRatio: 16 / 9, marginHorizontal: 20, marginTop: 6, borderRadius: radius.lg,
     backgroundColor: colors.surfaceRaised, borderWidth: 1, borderColor: colors.hairline,
-    alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
+    alignItems: 'center', justifyContent: 'center', overflow: 'hidden', alignSelf: 'stretch',
   },
   slideFrameReadonly: { opacity: 0.92 },
-  slideIdx: {
-    position: 'absolute', top: 14, left: 16, fontSize: 11, color: colors.inkFaint, zIndex: 1,
-  },
   slideTitle: { fontSize: 15, fontWeight: '700', color: colors.inkDim, paddingHorizontal: 20, textAlign: 'center' },
-  slideHint: {
-    position: 'absolute', bottom: 12, fontSize: 11, color: colors.inkFaint, zIndex: 1,
-  },
 
   timerCard: {
     marginHorizontal: 20, marginTop: 12, padding: 14, borderRadius: radius.md,

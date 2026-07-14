@@ -96,6 +96,22 @@ const EVENTS = {
   PRESENTATION_ENDED: 'presentation:ended',
   // payload: { totalElapsedSeconds: number, presenterCount: number, audienceCount: number }
 
+  // [신규] 현재 발표자 앱 → 서버: 발표 시작을 "취소"하고 대기 화면으로 되돌리기
+  // (예: 모바일 리모컨에서 첫 슬라이드보다 더 앞으로 스와이프한 경우)
+  // ※ PRESENTATION_END와 다름: END는 발표가 끝났다는 뜻이라 이후 Q&A 화면으로 진행되지만,
+  //   CANCEL은 "시작을 되돌린다"는 뜻이라 곧장 시작 전 상태(대기화면/QR화면)로 복귀해야 함
+  // ※ 권한: 보낸 사람 == 현재 currentPresenterId
+  PRESENTATION_CANCEL: 'presentation:cancel',
+  // payload: {}
+
+  // 서버 → 모든 발표자 앱 + PC웹 + 청중웹: 발표 취소 브로드캐스트
+  // ※ 서버는 room.status를 'wait'로 되돌리고, 진행 중이던 타이머를 정지해야 함
+  // ※ 발표자 앱: 대기화면(waiting)으로 이동
+  // ※ PC웹(display): QR/코드 보여주는 화면으로 복귀
+  // ※ 청중웹(audience): 대기 화면으로 복귀
+  PRESENTATION_CANCELLED: 'presentation:cancelled',
+  // payload: {}
+
 
   // ══════════════════════════════════════════════
   // 슬라이드 제어

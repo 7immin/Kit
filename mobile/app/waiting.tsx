@@ -1,5 +1,5 @@
 // mobile/app/waiting.tsx
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Pressable, Switch } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { router } from 'expo-router';
@@ -118,19 +118,24 @@ function DeckUploadButton() {
       name: file.name,
       type: 'application/pdf',
     } as any);
+    // [수정] 서버가 x-user-id 헤더 대신 ownerId form 필드로 업로더를 식별함 (min 브랜치 병합 이후 계약)
+    formData.append('ownerId', useKitStore.getState().userId ?? '');
 
     try {
       const res = await fetch(`${SERVER_URL}/rooms/${roomId}/presentation`, {
         method: 'POST',
         body: formData,
-        headers: {
-          'Content-Type': 'multipart/form-data',
-          'x-user-id': useKitStore.getState().userId ?? '',
-        },
+        headers: { 'Content-Type': 'multipart/form-data' },
       });
       const data = await res.json();
       if (data.success) {
         useKitStore.setState({ deckUploaded: true, slideCount: data.slideCount });
+        // 응답에 이미 슬라이드별 이미지 URL이 실려오므로, 별도 GET 없이 바로 store에 반영
+        const images: Record<number, string> = {};
+        (data.images || []).forEach((img: { slideIndex: number; imageUrl: string }) => {
+          images[img.slideIndex] = `${SERVER_URL}${img.imageUrl}`;
+        });
+        useKitStore.getState().setSlideImages(images);
       } else {
         alert(data.message);
       }
@@ -256,7 +261,18 @@ function NoteEditButton() {
 
 function StartPresentingButton() {
   const [starting, setStarting] = useState(false);
-  const roomId = useKitStore((s) => s.roomId);
+  // [수정] 아래 타임아웃 콜백은 "6초 뒤에도 presenting이 안 켜져 있으면 실패로 간주"하는 로직인데,
+  // 발표가 짧게(6초 이내) 끝나버리면 그 시점엔 presenting이 다시 false가 돼있어서 이미 성공적으로
+  // 시작하고 끝난 발표인데도 뒤늦게 "응답 없음" 알림이 떠버렸음(질문 화면 등 완전히 다른 화면으로
+  // 넘어간 뒤에 나타남). router.replace로 이 화면 자체가 unmount되는 성공 케이스에서는 타임아웃을
+  // 확실히 취소해서, 그 뒤에 발표가 얼마나 빨리 끝나든 이 알림이 절대 안 뜨게 함.
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
 
   const handleStart = () => {
     setStarting(true);
@@ -266,6 +282,16 @@ function StartPresentingButton() {
       allowMidQuestions: useKitStore.getState().allowMidQuestions,
       anonymous: useKitStore.getState().anonymous,
     });
+    // [추가] 서버가 host_user_id/room_id 매칭에 실패하면 아무 응답도 안 주고 조용히 무시하는
+    // 케이스가 있어서(재연결로 socket_id가 바뀐 경우 등), 일정 시간 안에 화면 전환이 안 되면
+    // 버튼을 다시 눌러볼 수 있게 풀어준다. presenting이 되면 어차피 화면이 바뀌어 이 컴포넌트는 사라짐.
+    timeoutRef.current = setTimeout(() => {
+      timeoutRef.current = null;
+      if (!useKitStore.getState().presenting) {
+        setStarting(false);
+        alert('발표 시작 응답이 없어요. 다시 시도해주세요 (계속되면 재접속 후 시도)');
+      }
+    }, 6000);
   };
 
   return (

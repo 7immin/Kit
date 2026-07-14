@@ -1,8 +1,9 @@
 // mobile/app/index.tsx
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet, ScrollView } from 'react-native';
 import { router } from 'expo-router';
-import { socket } from '../lib/socket';
+import { useFocusEffect } from '@react-navigation/native';
+import { socket, getLocalUserId } from '../lib/socket';
 import { EVENTS } from '../../shared/events';
 import { useKitStore } from '../store/useKitStore';
 import { colors, radius } from '../constants/theme';
@@ -17,6 +18,21 @@ export default function StartScreen() {
   const [name, setName] = useState('');
   const [title, setTitle] = useState('');
   const [joinCode, setJoinCode] = useState('');
+
+  // [추가] 뒤로가기 등으로 방(대기화면/리모컨 등)에서 시작화면으로 돌아오면, 소켓을 완전히 끊었다
+  // 다시 붙게 만들어서 서버 쪽에 남아있던 예전 방 멤버십(및 그 방의 타이머 브로드캐스트 수신)을
+  // 정리한다. 서버에 ROOM_LEAVE 처리 로직이 아직 없어서, 연결을 통째로 끊는 게 지금 확실히
+  // 청소되는 유일한 방법 — disconnect되면 소켓은 서버의 모든 room에서 자동으로 빠짐.
+  useFocusEffect(
+    useCallback(() => {
+      const { roomId } = useKitStore.getState();
+      if (roomId) {
+        socket.emit(EVENTS.ROOM_LEAVE, {});
+        socket.disconnect();
+        useKitStore.getState().resetRoomState();
+      }
+    }, [])
+  );
 
   const handleCreateRoom = () => {
     if (!title.trim()) {
@@ -33,7 +49,7 @@ export default function StartScreen() {
         });
         router.push('/waiting');
       });
-      socket.emit(EVENTS.ROOM_CREATE, { title: title.trim(), name: name || '발표자' });
+      socket.emit(EVENTS.ROOM_CREATE, { title: title.trim(), name: name || '발표자', userId: getLocalUserId() });
     };
 
     if (socket.connected) {
@@ -56,6 +72,7 @@ export default function StartScreen() {
     socket.emit(EVENTS.ROOM_JOIN_PRESENTER, {
       presenterCode: joinCode.trim().toUpperCase(),
       name: name || '발표자',
+      userId: getLocalUserId(),
     });
   };
 
