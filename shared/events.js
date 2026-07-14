@@ -28,7 +28,10 @@ const EVENTS = {
   //   이렇게 해야 소켓이 끊겼다 재연결돼도 발표 제어권(current_presenter_id 등)을 잃지 않는다.
 
   ROOM_CREATE: 'room:create',
-  // payload: { title: string, name?: string, userId?: string }  // 제목 입력 필수
+  // payload: { title: string, name?: string, userId?: string, token?: string }  // 제목 입력 필수
+  // ※ [신규] token(로그인 JWT)이 유효하면 서버가 userId 대신 accountId를 신원으로 사용하고
+  //   rooms.owner_account_id를 채워서 이후 "이전 발표 기록" 조회에 쓸 수 있게 한다.
+  //   token이 없거나 무효하면(비로그인) 기존처럼 userId(로컬 익명 ID)를 그대로 쓴다.
 
   ROOM_CREATED: 'room:created',
   // payload: { roomId: string, title: string, displayCode: string, audienceCode: string, presenterCode: string, userId: string }

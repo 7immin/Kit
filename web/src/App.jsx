@@ -19,6 +19,26 @@ const getOrCreateUserId = (storageKey) => {
 
 const API_BASE = `http://${window.location.hostname}:4000`;
 
+// [테스트용] 로그인 토큰(JWT) + 계정 정보를 localStorage에 보관/조회
+const getStoredAuth = () => {
+  const token = localStorage.getItem('kit_jwt');
+  const accountRaw = localStorage.getItem('kit_account');
+  if (!token || !accountRaw) return { token: null, account: null };
+  try {
+    return { token, account: JSON.parse(accountRaw) };
+  } catch {
+    return { token: null, account: null };
+  }
+};
+const storeAuth = (token, account) => {
+  localStorage.setItem('kit_jwt', token);
+  localStorage.setItem('kit_account', JSON.stringify(account));
+};
+const clearAuth = () => {
+  localStorage.removeItem('kit_jwt');
+  localStorage.removeItem('kit_account');
+};
+
 // [신규] 서버가 PDF를 페이지별 PNG로 변환해 저장해두므로, 슬라이드 목록(이미지 URL 포함)을
 // REST로 받아와 슬라이드 번호 → 이미지 URL 맵으로 만들어둔다.
 const fetchSlideImages = async (roomId, setSlideImages) => {
@@ -53,6 +73,14 @@ const HomeView = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
 
+  // [테스트용] 회원가입/로그인 상태
+  const [auth, setAuth] = useState({ token: null, account: null });
+  const [authMode, setAuthMode] = useState('login'); // 'login' | 'signup'
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authName, setAuthName] = useState('');
+  const [authError, setAuthError] = useState('');
+
   useEffect(() => {
     socket.on('timer:update', (data) => setTimerData(data));
     socket.on('error', (err) => alert(`오류: ${err.message}`));
@@ -62,9 +90,55 @@ const HomeView = () => {
     };
   }, []);
 
+  // 새로고침해도 로그인 상태가 유지되도록, 저장된 토큰이 아직 유효한지 서버에 확인
+  useEffect(() => {
+    const stored = getStoredAuth();
+    if (!stored.token) return;
+    fetch(`${API_BASE}/auth/me`, { headers: { Authorization: `Bearer ${stored.token}` } })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.success) setAuth({ token: stored.token, account: { accountId: data.accountId, name: data.name } });
+        else clearAuth();
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleAuthSubmit = async () => {
+    setAuthError('');
+    const path = authMode === 'signup' ? '/auth/signup' : '/auth/login';
+    const body = authMode === 'signup'
+      ? { email: authEmail, password: authPassword, name: authName }
+      : { email: authEmail, password: authPassword };
+
+    try {
+      const res = await fetch(`${API_BASE}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setAuthError(data.message);
+        return;
+      }
+      const account = { accountId: data.accountId, name: data.name };
+      storeAuth(data.token, account);
+      setAuth({ token: data.token, account });
+      setAuthPassword('');
+    } catch (e) {
+      setAuthError(`요청 중 오류: ${e.message}`);
+    }
+  };
+
+  const handleLogout = () => {
+    clearAuth();
+    setAuth({ token: null, account: null });
+  };
+
   const handleTestCreateRoom = () => {
     const myUserId = getOrCreateUserId('kit_userId_host');
-    socket.emit('room:create', { title: roomTitle, userId: myUserId });
+    // 로그인 상태면 토큰을 같이 보내서, 서버가 익명 userId 대신 계정을 신원으로 쓰게 한다.
+    socket.emit('room:create', { title: roomTitle, userId: myUserId, token: auth.token });
     socket.once('room:created', (data) => {
       setTestRoomInfo(data);
       if (data.userId) localStorage.setItem('kit_userId_host', data.userId);
@@ -115,7 +189,33 @@ const HomeView = () => {
     <div style={{ textAlign: 'center', marginTop: '50px' }}>
       <h1>KIT 웹 게이트웨이 🚀</h1>
       <p>가상 방을 만들고, 발급된 코드로 접속 테스트를 해보세요!</p>
-      
+
+      <div style={{ margin: '20px auto', padding: '20px', border: '2px dashed #00b894', display: 'inline-block', borderRadius: '10px', textAlign: 'left' }}>
+        <h3 style={{ marginTop: 0 }}>👤 회원가입 / 로그인 테스트</h3>
+        {auth.account ? (
+          <div>
+            <p>✅ <strong>{auth.account.name}</strong>님으로 로그인됨 (accountId: {auth.account.accountId})</p>
+            <button onClick={handleLogout} style={{ padding: '8px 16px', cursor: 'pointer' }}>로그아웃</button>
+          </div>
+        ) : (
+          <div>
+            <div style={{ marginBottom: '10px' }}>
+              <button onClick={() => setAuthMode('login')} style={{ fontWeight: authMode === 'login' ? 'bold' : 'normal', marginRight: '10px' }}>로그인</button>
+              <button onClick={() => setAuthMode('signup')} style={{ fontWeight: authMode === 'signup' ? 'bold' : 'normal' }}>회원가입</button>
+            </div>
+            {authMode === 'signup' && (
+              <input placeholder="이름" value={authName} onChange={(e) => setAuthName(e.target.value)} style={{ padding: '8px', marginRight: '8px', marginBottom: '8px' }} />
+            )}
+            <input placeholder="이메일" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} style={{ padding: '8px', marginRight: '8px', marginBottom: '8px' }} />
+            <input type="password" placeholder="비밀번호 (6자 이상)" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} style={{ padding: '8px', marginRight: '8px', marginBottom: '8px' }} />
+            <button onClick={handleAuthSubmit} style={{ padding: '8px 16px', cursor: 'pointer', backgroundColor: '#00b894', color: 'white', border: 'none', borderRadius: '5px' }}>
+              {authMode === 'signup' ? '가입하기' : '로그인'}
+            </button>
+            {authError && <p style={{ color: '#d63031' }}>{authError}</p>}
+          </div>
+        )}
+      </div>
+
       <div style={{ marginTop: '20px', padding: '30px', border: '2px dashed #007BFF', display: 'inline-block', borderRadius: '10px' }}>
         <h3>🛠️ 백엔드 단독 테스트용 방 만들기</h3>
         <input 

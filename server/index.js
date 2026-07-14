@@ -6,6 +6,8 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { jsonrepair } = require('jsonrepair');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 const { EVENTS } = require('../shared/events.js');
 const db = require('./database.js');
@@ -25,6 +27,17 @@ const io = new Server(server, {
 
 const generateCode = () => Math.random().toString(36).substring(2, 8).toUpperCase();
 const generateUserId = () => 'usr_' + Math.random().toString(36).substring(2, 10);
+const generateAccountId = () => 'acc_' + Math.random().toString(36).substring(2, 10);
+
+// [신규] 로그인 토큰(JWT) 검증. 실패하면 null — 호출부에서 "비로그인"과 동일하게 취급.
+function verifyToken(token) {
+  if (!token) return null;
+  try {
+    return jwt.verify(token, process.env.JWT_SECRET);
+  } catch (e) {
+    return null;
+  }
+}
 
 const roomTimers = {}; 
 const roomSlides = {};
@@ -140,6 +153,78 @@ async function callAiApiWithRetry(prompt, options = {}) {
 // =========================================================================
 // [REST API 구역]
 // =========================================================================
+
+// 0-1. 회원가입
+app.post('/auth/signup', async (req, res) => {
+  const { email, password, name } = req.body;
+
+  if (!email || !password || !name) {
+    return res.status(400).json({ success: false, message: '이메일, 비밀번호, 이름은 필수입니다.' });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ success: false, message: '비밀번호는 6자 이상이어야 합니다.' });
+  }
+
+  try {
+    const existing = db.prepare('SELECT account_id FROM accounts WHERE login_id = ?').get(email);
+    if (existing) {
+      return res.status(409).json({ success: false, message: '이미 가입된 이메일입니다.' });
+    }
+
+    const accountId = generateAccountId();
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    db.prepare('INSERT INTO accounts (account_id, login_id, password, name, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(accountId, email, passwordHash, name, Date.now());
+
+    const token = jwt.sign({ accountId, name }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    res.json({ success: true, token, accountId, name });
+
+  } catch (error) {
+    console.error('회원가입 중 에러:', error);
+    res.status(500).json({ success: false, message: '회원가입 처리 중 오류가 발생했습니다.' });
+  }
+});
+
+// 0-2. 로그인
+app.post('/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ success: false, message: '이메일과 비밀번호를 입력해 주세요.' });
+  }
+
+  try {
+    const account = db.prepare('SELECT * FROM accounts WHERE login_id = ?').get(email);
+    if (!account) {
+      return res.status(401).json({ success: false, message: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+    }
+
+    const passwordMatches = await bcrypt.compare(password, account.password);
+    if (!passwordMatches) {
+      return res.status(401).json({ success: false, message: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+    }
+
+    const token = jwt.sign({ accountId: account.account_id, name: account.name }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    res.json({ success: true, token, accountId: account.account_id, name: account.name });
+
+  } catch (error) {
+    console.error('로그인 중 에러:', error);
+    res.status(500).json({ success: false, message: '로그인 처리 중 오류가 발생했습니다.' });
+  }
+});
+
+// 0-3. 로그인 상태 확인 (프론트가 저장해둔 토큰이 아직 유효한지 새로고침 시 확인하는 용도)
+app.get('/auth/me', (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const decoded = verifyToken(token);
+
+  if (!decoded) {
+    return res.status(401).json({ success: false, message: '유효하지 않거나 만료된 토큰입니다.' });
+  }
+  res.json({ success: true, accountId: decoded.accountId, name: decoded.name });
+});
 
 // 1. 발표 자료(PDF) 단독 업로드 API
 app.post('/rooms/:roomId/presentation', upload.single('presentationFile'), async (req, res) => {
@@ -515,7 +600,7 @@ io.on('connection', (socket) => {
   // [1] 방 생성 & 입장 로직
   // ----------------------------------------------------
   socket.on(EVENTS.ROOM_CREATE, (payload = {}) => {
-    const { title, name, userId: clientUserId } = payload;
+    const { title, name, userId: clientUserId, token } = payload;
 
     if (!title || title.trim() === '') {
       return socket.emit('error', { message: '방 제목을 입력해주세요.' });
@@ -525,20 +610,25 @@ io.on('connection', (socket) => {
     const presenterCode = generateCode();
     const displayCode = generateCode();
     const audienceCode = generateCode();
-    // [수정] 클라이언트가 보관 중인 고정 ID가 있으면 그걸 그대로 쓴다.
-    // 없으면(첫 실행 등) 서버가 새로 발급하고, 발급한 값을 응답으로 돌려줘서 클라이언트가 저장해두게 한다.
-    const userId = clientUserId || generateUserId();
+
+    // [신규] 로그인한 회원이면 accountId를 그대로 userId로 쓴다 — 기기와 무관하게
+    // 항상 같은 신원이 되므로, 나중에 이 계정의 발표 기록을 그대로 조회할 수 있다.
+    // 토큰이 없거나 무효하면(비로그인) 기존처럼 클라이언트가 들고 있는 익명 userId를 그대로 쓴다.
+    const account = verifyToken(token);
+    const userId = account ? account.accountId : (clientUserId || generateUserId());
+    const displayName = account ? account.name : (name || '발표자');
+    const ownerAccountId = account ? account.accountId : null;
 
     const stmt = db.prepare(`
-      INSERT INTO rooms (room_id, title, host_user_id, current_presenter_id, presenter_code, display_code, audience_code, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'wait')
+      INSERT INTO rooms (room_id, title, host_user_id, current_presenter_id, presenter_code, display_code, audience_code, status, owner_account_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'wait', ?)
     `);
-    stmt.run(roomId, title, userId, userId, presenterCode, displayCode, audienceCode);
+    stmt.run(roomId, title, userId, userId, presenterCode, displayCode, audienceCode, ownerAccountId);
 
-    upsertUser(userId, socket.id, roomId, 'host', name || '발표자');
+    upsertUser(userId, socket.id, roomId, 'host', displayName);
 
     socket.join(roomId);
-    socket.emit(EVENTS.ROOM_CREATED, { roomId, title, displayCode, audienceCode, presenterCode, userId }); 
+    socket.emit(EVENTS.ROOM_CREATED, { roomId, title, displayCode, audienceCode, presenterCode, userId });
     broadcastPresenterList(roomId);
   });
 
