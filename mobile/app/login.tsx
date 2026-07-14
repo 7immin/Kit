@@ -4,7 +4,7 @@ import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
 import { router } from 'expo-router';
 import { SERVER_URL } from '../lib/socket';
 import { colors, radius } from '../constants/theme';
-import * as SecureStore from 'expo-secure-store';
+import { useAuthStore } from '../store/useAuthStore';
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
@@ -28,7 +28,11 @@ export default function LoginScreen() {
         alert(data.message || '로그인에 실패했어요');
         return;
       }
-      await SecureStore.setItemAsync('token', data.token);
+      // [수정] 토큰만 저장하던 걸 useAuthStore로 옮기고, 이름/이메일도 같이 저장해서 다른 화면에서
+      // "OO님" 표시나 방 생성 시 이름 자동입력에 쓸 수 있게 함. 응답 형태가 확정 안 돼있어서
+      // (B 쪽 TODO) name 필드 위치를 최대한 방어적으로 찾음.
+      const accountName = data.user?.name ?? data.name ?? email.trim();
+      useAuthStore.getState().setAuth({ token: data.token, name: accountName, email: email.trim() });
       router.replace('/');
     } catch (e) {
       alert('서버에 연결할 수 없어요');
@@ -39,6 +43,10 @@ export default function LoginScreen() {
 
   return (
     <View style={styles.container}>
+      <Pressable style={styles.closeBtn} onPress={() => router.back()}>
+        <Text style={styles.closeBtnText}>✕</Text>
+      </Pressable>
+
       <Text style={styles.brandBadge}>K</Text>
       <Text style={styles.title}>Kit에 로그인</Text>
 
@@ -73,6 +81,11 @@ export default function LoginScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.canvas, justifyContent: 'center', padding: 24, gap: 10 },
+  closeBtn: {
+    position: 'absolute', top: 56, right: 20, width: 36, height: 36, borderRadius: 999,
+    backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center',
+  },
+  closeBtnText: { fontSize: 15, color: colors.inkDim },
   brandBadge: {
     width: 48, height: 48, borderRadius: 14, backgroundColor: colors.spot, color: colors.spotInk,
     textAlign: 'center', lineHeight: 48, fontWeight: '700', fontSize: 20, alignSelf: 'center', marginBottom: 12,

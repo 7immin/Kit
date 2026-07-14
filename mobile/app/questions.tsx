@@ -124,7 +124,9 @@ function EndedQuestionsView() {
               <View style={styles.qcardMeta}>
                 <Text style={styles.qcardNick}>{answeringQuestion.nickname}</Text>
                 <Text style={styles.qcardTagLive}>
-                  {iAmAnswering ? '나' : answeringQuestion.answeringPresenterName}님이 답변 중
+                  {/* [수정] 본인이 답변 중일 때 '나'로 하드코딩해서 보여주고 있었음 — 실제 등록된
+                      이름이 뜨도록 고침 (서버가 이 이벤트에 실어주는 이름을 그대로 사용) */}
+                  {answeringQuestion.answeringPresenterName}님이 답변 중
                 </Text>
               </View>
             </View>

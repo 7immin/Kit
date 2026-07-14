@@ -1,19 +1,30 @@
+import { useEffect } from 'react';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useSocketListeners } from '../hooks/useSocketListeners';
+import { useAuthStore } from '../store/useAuthStore';
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   useSocketListeners();
 
+  // 앱 시작 시 SecureStore에 저장된 로그인 토큰을 한 번만 복원 (있으면 로그인 상태 유지)
+  useEffect(() => {
+    useAuthStore.getState().hydrate();
+  }, []);
+
   return (
-    // remote.tsx의 슬라이드 스와이프 제스처(GestureDetector)가 동작하려면 트리 최상단에
-    // GestureHandlerRootView가 반드시 있어야 함 (expo-router가 자동으로 감싸주지 않음)
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    // [수정] GestureHandlerRootView를 여기(앱 전체 루트)에 걸었더니, Expo Go + 안드로이드 조합에서
+    // remote.tsx와 전혀 상관없는 다른 화면(waiting.tsx 등)의 일반 ScrollView 스크롤까지 먹통이
+    // 되는 문제가 있었음(iOS에서는 재현 안 됨 — RNGH가 안드로이드에서 터치 디스패치 자체를 새로
+    // 설치하는 방식이라, 앱 전체에 걸면 그 화면에서 제스처를 안 쓰는 다른 컴포넌트까지 영향을 줄
+    // 수 있음). remote.tsx의 스와이프 넘기기에만 필요한 거라, GestureHandlerRootView를 거기로
+    // 옮기고(그 화면 안에서만 감싸도록) 여기서는 제거해서 다른 화면들의 터치 처리에 영향이 없게 함.
+    <SafeAreaProvider>
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="index" />
@@ -37,6 +48,6 @@ export default function RootLayout() {
         </Stack>
         <StatusBar style="auto" />
       </ThemeProvider>
-    </GestureHandlerRootView>
+    </SafeAreaProvider>
   );
 }

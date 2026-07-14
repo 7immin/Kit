@@ -1,23 +1,90 @@
 // mobile/app/index.tsx
-import { useState, useCallback } from 'react';
-import { View, Text, TextInput, Pressable, StyleSheet, ScrollView } from 'react-native';
+import { useState, useCallback, useEffect } from 'react';
+import { View, Text, TextInput, Pressable, StyleSheet, ScrollView, Alert } from 'react-native';
 import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import { socket, getLocalUserId } from '../lib/socket';
+import { socket, getLocalUserId, fetchMyHistory, type HistoryListItem } from '../lib/socket';
 import { EVENTS } from '../../shared/events';
 import { useKitStore } from '../store/useKitStore';
+import { useAuthStore } from '../store/useAuthStore';
 import { colors, radius } from '../constants/theme';
 
-// TODO: 발표 기록 조회 API 준비되면 실제 데이터로 교체
-const PLACEHOLDER_HISTORY = [
-  { id: 'h1', title: '2026 상반기 팀 회고', date: '2026.06.28', duration: '42분' },
-  { id: 'h2', title: 'Kit 프로젝트 중간발표', date: '2026.07.03', duration: '18분' },
-];
+function formatHistoryDate(ms: number | null) {
+  if (!ms) return '-';
+  const d = new Date(ms);
+  return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function formatHistoryDuration(totalSeconds: number) {
+  const m = Math.floor(totalSeconds / 60);
+  return m > 0 ? `${m}분` : `${totalSeconds}초`;
+}
+
+// 로그인은 선택사항: 로그인 안 해도 기존처럼 익명으로 방을 만들 수 있고, 로그인했을 때만
+// 우측 상단에 계정 정보가 뜨고 방 생성 시 계정에 연결됨(이전 발표 기록 조회용)
+function AccountRow() {
+  const name = useAuthStore((s) => s.name);
+  const hydrated = useAuthStore((s) => s.hydrated);
+
+  const handleLogout = () => {
+    Alert.alert('로그아웃', '로그아웃할까요?', [
+      { text: '취소', style: 'cancel' },
+      { text: '로그아웃', style: 'destructive', onPress: () => useAuthStore.getState().clearAuth() },
+    ]);
+  };
+
+  // 로그인 상태를 SecureStore에서 아직 복원 중이면(hydrate 완료 전) 깜빡임 방지를 위해 자리만 비워둠
+  if (!hydrated) return <View style={styles.accountRow} />;
+
+  return (
+    <View style={styles.accountRow}>
+      {name ? (
+        <>
+          <Text style={styles.accountName}>{name}님</Text>
+          <Pressable onPress={handleLogout}>
+            <Text style={styles.accountLink}>로그아웃</Text>
+          </Pressable>
+        </>
+      ) : (
+        <Pressable onPress={() => router.push('/login')}>
+          <Text style={styles.accountLink}>로그인</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
 
 export default function StartScreen() {
   const [name, setName] = useState('');
   const [title, setTitle] = useState('');
   const [joinCode, setJoinCode] = useState('');
+  const accountName = useAuthStore((s) => s.name);
+  const accountToken = useAuthStore((s) => s.token);
+  const authHydrated = useAuthStore((s) => s.hydrated);
+
+  const [historyList, setHistoryList] = useState<HistoryListItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // 로그인돼있고 아직 이름을 직접 안 건드렸으면, 계정 이름을 발표자 이름 칸에 미리 채워줌
+  useEffect(() => {
+    if (accountName && !name) setName(accountName);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountName]);
+
+  // 로그인 상태일 때만 발표 기록을 불러옴 (게스트는 계정에 연결된 방이 없어서 조회 불가).
+  // 화면에 돌아올 때마다 다시 불러와서, 상세 화면에서 기록을 삭제하고 돌아오면 목록에도 바로 반영됨.
+  useFocusEffect(
+    useCallback(() => {
+      if (!accountToken) {
+        setHistoryList([]);
+        return;
+      }
+      setHistoryLoading(true);
+      fetchMyHistory(accountToken)
+        .then(setHistoryList)
+        .finally(() => setHistoryLoading(false));
+    }, [accountToken])
+  );
 
   // [추가] 뒤로가기 등으로 방(대기화면/리모컨 등)에서 시작화면으로 돌아오면, 소켓을 완전히 끊었다
   // 다시 붙게 만들어서 서버 쪽에 남아있던 예전 방 멤버십(및 그 방의 타이머 브로드캐스트 수신)을
@@ -49,7 +116,15 @@ export default function StartScreen() {
         });
         router.push('/waiting');
       });
-      socket.emit(EVENTS.ROOM_CREATE, { title: title.trim(), name: name || '발표자', userId: getLocalUserId() });
+      // [수정] 로그인돼있으면 token도 같이 보냄 — shared/events.js 스펙상 서버가 유효한 token을
+      // 받으면 userId 대신 accountId를 신원으로 써서 이 방을 계정에 연결해줌(이전 발표 기록용)
+      const authToken = useAuthStore.getState().token;
+      socket.emit(EVENTS.ROOM_CREATE, {
+        title: title.trim(),
+        name: name || '발표자',
+        userId: getLocalUserId(),
+        ...(authToken ? { token: authToken } : {}),
+      });
     };
 
     if (socket.connected) {
@@ -69,21 +144,29 @@ export default function StartScreen() {
       router.push('/waiting');
     });
 
+    // [수정] 방장(ROOM_CREATE)은 token을 같이 보내서 계정에 연결되는데, 코드로 참가하는
+    // 다른 발표자(ROOM_JOIN_PRESENTER)는 여태 token을 안 보내고 있었음 — 그래서 로그인한
+    // 상태로 참가해도 서버가 이 사람을 계정에 연결 못 해서 session_presenters에 account_id가
+    // 안 남고, "최근 발표"(GET /accounts/me/rooms)에도 영영 안 잡혔음(방장만 정상적으로 보임).
+    const authToken = useAuthStore.getState().token;
     socket.emit(EVENTS.ROOM_JOIN_PRESENTER, {
       presenterCode: joinCode.trim().toUpperCase(),
       name: name || '발표자',
       userId: getLocalUserId(),
+      ...(authToken ? { token: authToken } : {}),
     });
   };
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* 브랜드 마크 */}
+      {/* 브랜드 마크 + 로그인 상태 */}
       <View style={styles.brandRow}>
         <View style={styles.brandBadge}>
           <Text style={styles.brandBadgeText}>K</Text>
         </View>
         <Text style={styles.brandName}>Kit</Text>
+        <View style={{ flex: 1 }} />
+        <AccountRow />
       </View>
 
       {/* 방 생성 카드 */}
@@ -133,22 +216,44 @@ export default function StartScreen() {
 
       {/* 최근 발표 목록 */}
       <Text style={styles.sectionTitle}>최근 발표</Text>
-      {PLACEHOLDER_HISTORY.map((item) => (
-        <Pressable
-          key={item.id}
-          style={styles.recentCard}
-          onPress={() => router.push({ pathname: '/history', params: { id: item.id } })}
-        >
-          <View style={styles.recentThumb}>
-            <Text style={{ color: colors.cue }}>▤</Text>
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.recentTitle} numberOfLines={1}>{item.title}</Text>
-            <Text style={styles.recentMeta}>{item.date} · {item.duration}</Text>
-          </View>
-          <Text style={styles.recentChevron}>›</Text>
-        </Pressable>
-      ))}
+      {!authHydrated ? null : !accountToken ? (
+        <View style={styles.historyPromptCard}>
+          <Text style={styles.historyPromptText}>로그인하면 발표 기록이 여기 쌓여요</Text>
+          <Pressable onPress={() => router.push('/login')}>
+            <Text style={styles.accountLink}>로그인하기</Text>
+          </Pressable>
+        </View>
+      ) : historyLoading ? (
+        <Text style={styles.historyHint}>불러오는 중...</Text>
+      ) : historyList.length === 0 ? (
+        <Text style={styles.historyHint}>아직 발표 기록이 없어요</Text>
+      ) : (
+        historyList.map((item) => (
+          <Pressable
+            key={item.roomId}
+            style={styles.recentCard}
+            onPress={() =>
+              router.push({
+                pathname: '/history',
+                // [추가] 상세 화면(GET /rooms/:roomId/history)엔 참여 청중 수가 안 내려오는데
+                // 목록 API(GET /accounts/me/rooms)엔 있어서, 그냥 navigation param으로 같이 넘겨줌
+                params: { id: item.roomId, totalAudience: String(item.totalAudience) },
+              })
+            }
+          >
+            <View style={styles.recentThumb}>
+              <Text style={{ color: colors.cue }}>▤</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.recentTitle} numberOfLines={1}>{item.title}</Text>
+              <Text style={styles.recentMeta}>
+                {formatHistoryDate(item.endedAt)} · {formatHistoryDuration(item.totalTimeSeconds)}
+              </Text>
+            </View>
+            <Text style={styles.recentChevron}>›</Text>
+          </Pressable>
+        ))
+      )}
     </ScrollView>
   );
 }
@@ -164,6 +269,10 @@ const styles = StyleSheet.create({
   },
   brandBadgeText: { color: colors.spotInk, fontWeight: '700', fontSize: 16 },
   brandName: { fontSize: 17, fontWeight: '700', color: colors.ink },
+
+  accountRow: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 20 },
+  accountName: { fontSize: 13, color: colors.inkDim, fontWeight: '600' },
+  accountLink: { fontSize: 13, color: colors.cue, fontWeight: '600' },
 
   heroCard: {
     backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.hairline,
@@ -203,6 +312,12 @@ const styles = StyleSheet.create({
   joinHint: { fontSize: 11.5, color: colors.inkFaint, marginTop: 10 },
 
   sectionTitle: { fontSize: 14, fontWeight: '700', color: colors.inkDim, marginBottom: 10 },
+  historyPromptCard: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: colors.surface,
+    borderWidth: 1, borderColor: colors.hairline, borderRadius: radius.md, padding: 14, marginBottom: 10,
+  },
+  historyPromptText: { fontSize: 13, color: colors.inkDim },
+  historyHint: { fontSize: 12.5, color: colors.inkFaint, textAlign: 'center', paddingVertical: 16 },
 
   recentCard: {
     flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: colors.surface,

@@ -1,6 +1,7 @@
 // mobile/app/waiting.tsx
 import { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Pressable, Switch } from 'react-native';
+import { View, Text, StyleSheet, Pressable, Switch, ScrollView, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import { router } from 'expo-router';
 import { socket, SERVER_URL } from '../lib/socket';
@@ -129,7 +130,8 @@ function DeckUploadButton() {
       });
       const data = await res.json();
       if (data.success) {
-        useKitStore.setState({ deckUploaded: true, slideCount: data.slideCount });
+        // [신규] 새 자료를 올렸으니 예전 AI 요약 잠금은 무의미해짐 — 다시 눌러서 새로 만들 수 있게 풀어줌
+        useKitStore.setState({ deckUploaded: true, slideCount: data.slideCount, aiSummaryUsed: false });
         // 응답에 이미 슬라이드별 이미지 URL이 실려오므로, 별도 GET 없이 바로 store에 반영
         const images: Record<number, string> = {};
         (data.images || []).forEach((img: { slideIndex: number; imageUrl: string }) => {
@@ -201,9 +203,12 @@ function ScriptUploadButton() {
 
       if (data.success) {
         // 소켓 이벤트를 기다리지 않고, REST 응답으로 바로 상태 갱신
+        // [신규] 새 대본을 올렸으니 AI 요약 잠금도 다시 풀어줌 (이 대본을 대상으로 새로 요약할 수 있어야 함)
         useKitStore.setState({
           slideNotes: data.slideNotes,
           scriptProcessing: false,
+          hasScript: true,
+          aiSummaryUsed: false,
         });
       } else {
         alert(data.message);
@@ -236,6 +241,74 @@ function ScriptUploadButton() {
         <Text style={styles.uploadTitle}>{label}</Text>
         <Text style={styles.uploadSub}>TXT</Text>
       </View>
+    </Pressable>
+  );
+}
+
+// [신규] 대본 업로드 창 끝에 놓는 AI 요약 버튼. 서버(POST /rooms/:roomId/slides/note/ai)가
+// rooms.has_script를 직접 확인해서 알아서 갈라줌 — 대본이 있으면 그 대본을 3~4줄로 요약하고,
+// 없으면 PDF 슬라이드만 보고 새로 노트를 생성한다. 그래서 모바일 쪽은 두 케이스를 구분해서
+// 다른 요청을 보낼 필요 없이 그냥 호출만 하면 됨 — 버튼 라벨만 hasScript로 미리 알려줌.
+function AiSummaryButton() {
+  const deckUploaded = useKitStore((s) => s.deckUploaded);
+  const scriptProcessing = useKitStore((s) => s.scriptProcessing);
+  const hasScript = useKitStore((s) => s.hasScript);
+  // [신규] 한 번 성공적으로 AI 요약/생성을 돌렸으면 잠금. 계속 눌러서 API 호출 제한에 걸리는 걸
+  // 막기 위함 — 발표자료를 새로 올리거나(DeckUploadButton) 대본을 새로 올리면(ScriptUploadButton)
+  // 다시 풀림. 방 안 다른 발표자가 눌러도 NOTES_READY 브로드캐스트로 이 값이 동기화됨.
+  const aiSummaryUsed = useKitStore((s) => s.aiSummaryUsed);
+  const roomId = useKitStore((s) => s.roomId);
+  const [requesting, setRequesting] = useState(false);
+
+  const handlePress = async () => {
+    if (!deckUploaded) {
+      alert('먼저 발표 자료를 업로드해주세요');
+      return;
+    }
+    if (aiSummaryUsed) {
+      alert('이미 AI 요약을 만들었어요. 다시 만들려면 발표자료나 대본을 새로 올려주세요');
+      return;
+    }
+    setRequesting(true);
+    useKitStore.setState({ scriptProcessing: true });
+    try {
+      const res = await fetch(`${SERVER_URL}/rooms/${roomId}/slides/note/ai`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        // 소켓(NOTES_READY)으로도 곧 같은 내용이 오지만, REST 응답으로 먼저 반영해서 체감 속도를 높임
+        useKitStore.setState({
+          slideNotes: data.slideNotes,
+          scriptProcessing: false,
+          hasScript: !!data.hasScript,
+          aiSummaryUsed: true,
+        });
+      } else {
+        alert(data.message || 'AI 요약에 실패했어요');
+        useKitStore.setState({ scriptProcessing: false });
+      }
+    } catch (e) {
+      alert('AI 요약 실패, 서버 연결을 확인해주세요');
+      useKitStore.setState({ scriptProcessing: false });
+    } finally {
+      setRequesting(false);
+    }
+  };
+
+  const label = scriptProcessing
+    ? 'AI 처리 중...'
+    : aiSummaryUsed
+    ? 'AI 요약 완료 ✓'
+    : hasScript
+    ? '대본 AI 요약하기'
+    : '슬라이드로 AI 노트 생성하기';
+
+  return (
+    <Pressable
+      style={[styles.ghostButton, (!deckUploaded || aiSummaryUsed) && styles.disabled]}
+      onPress={handlePress}
+      disabled={requesting || scriptProcessing || aiSummaryUsed}
+    >
+      <Text style={styles.ghostButtonText}>✨ {label}</Text>
     </Pressable>
   );
 }
@@ -306,9 +379,21 @@ export default function WaitingScreen() {
   const displayCode = useKitStore((s) => s.displayCode);
   const presenterCode = useKitStore((s) => s.presenterCode);
   const isHost = useIsHost();
+  const insets = useSafeAreaInsets();
 
   return (
-    <View style={styles.container}>
+    <ScrollView
+      style={styles.container}
+      // [수정] 하드코딩된 paddingTop:60 대신 실제 기기의 안전영역(status bar 등)만큼만 여백을 줌.
+      // 특히 paddingBottom은 android.edgeToEdgeEnabled 때문에 화면 아래를 침범하는 시스템 내비게이션
+      // 바(제스처 바 등)의 높이(insets.bottom)를 더해줘야 함 — 이게 없으면 마지막 버튼이 그 내비게이션
+      // 바 영역 안에 놓여서, 그 지점에서 시작하는 드래그는 스크롤이 아니라 OS의 뒤로가기/홈 제스처로
+      // 먹혀버려 "스크롤 자체가 안 되는" 것처럼 보였음(삼성 등 안드로이드에서만 재현되던 문제).
+      contentContainerStyle={[
+        styles.scrollBody,
+        { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 48 },
+      ]}
+    >
       <Text style={styles.roomTitle}>{title ?? '제목 없는 발표'}</Text>
 
       <View style={styles.codeRow}>
@@ -333,6 +418,8 @@ export default function WaitingScreen() {
       <View style={{ height: 10 }} />
       <ScriptUploadButton />
       <View style={{ height: 10 }} />
+      <AiSummaryButton />
+      <View style={{ height: 10 }} />
       <NoteEditButton />
 
       {isHost ? (
@@ -349,17 +436,24 @@ export default function WaitingScreen() {
       ) : (
         <>
           <View style={{ height: 16 }} />
-          <View style={styles.card}>
-            <Text style={styles.value}>현재 발표자가 발표를 시작하면 자동으로 화면이 넘어가요</Text>
+          <View style={styles.waitingCard}>
+            <ActivityIndicator size="small" color={colors.spot} />
+            <Text style={styles.waitingTitle}>발표자를 기다리는 중이에요</Text>
+            <Text style={styles.waitingSub}>현재 발표자가 발표를 시작하면{'\n'}자동으로 화면이 넘어가요</Text>
           </View>
         </>
       )}
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.canvas, padding: 20, paddingTop: 60, gap: 4 },
+  container: { flex: 1, backgroundColor: colors.canvas },
+  // [수정] 예전엔 container(View)에 직접 padding을 주고 스크롤이 아예 없어서, 화면이 짧은
+  // 기기(안드로이드 등)에서 아랫부분(발표 시작 버튼 등)이 화면 밖으로 잘리고 스크롤도 안 됐음.
+  // ScrollView로 감싸고, 상/하 padding은 이제 WaitingScreen에서 useSafeAreaInsets()로 동적으로
+  // 계산해서 contentContainerStyle에 얹어줌 (여기 paddingHorizontal만 고정값으로 남김)
+  scrollBody: { paddingHorizontal: 20, gap: 4 },
   roomTitle: { color: colors.ink, fontSize: 19, fontWeight: '700', marginBottom: 16 },
 
   codeRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
@@ -375,6 +469,16 @@ const styles = StyleSheet.create({
     borderRadius: radius.md, padding: 14,
   },
   divider: { height: 1, backgroundColor: colors.hairline, marginVertical: 10 },
+
+  // [수정] 발표자가 아닌 참여자에게 보이던 안내 문구가 다른 카드와 똑같은 스타일에 텍스트 한 줄만
+  // 덜렁 있어서 대충 만든 것처럼 보였음 — 스피너 + 제목/부제 2단 구성으로 "대기 중" 상태를 명확히 표현
+  waitingCard: {
+    backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.hairline,
+    borderRadius: radius.md, paddingVertical: 28, paddingHorizontal: 20,
+    alignItems: 'center', gap: 10,
+  },
+  waitingTitle: { color: colors.ink, fontSize: 15, fontWeight: '700' },
+  waitingSub: { color: colors.inkDim, fontSize: 13, textAlign: 'center', lineHeight: 19 },
 
   label: { color: colors.inkDim, fontSize: 13 },
   value: { color: colors.ink, fontSize: 15 },

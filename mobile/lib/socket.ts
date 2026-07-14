@@ -61,3 +61,97 @@ export async function fetchSlideNotes(roomId: string): Promise<{ slideIndex: num
     return [];
   }
 }
+
+// ══════════════════════════════════════════════
+// 발표 기록(History) — B가 구현 완료함 (아래 3개 REST 엔드포인트 실제 스펙 기준으로 작성):
+//   GET    /accounts/me/rooms      → 내 발표 기록 목록
+//   GET    /rooms/:roomId/history  → 상세(자료/노트/답변된 질문/발표자 목록 한 번에)
+//   DELETE /rooms/:roomId/history  → 내 기록 목록에서만 숨김(방 자체는 안 지워짐 — 같이 발표한
+//                                    다른 사람 기록엔 영향 없음)
+// 셋 다 로그인 필요 (Authorization: Bearer <token>).
+// ══════════════════════════════════════════════
+
+export interface HistoryListItem {
+  roomId: string;
+  title: string;
+  endedAt: number | null;
+  totalTimeSeconds: number;
+  durationMinutes: number;
+  totalPresenters: number;
+  totalAudience: number;
+}
+
+export async function fetchMyHistory(token: string): Promise<HistoryListItem[]> {
+  try {
+    const res = await fetch(`${SERVER_URL}/accounts/me/rooms`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.rooms || [];
+  } catch (e) {
+    console.error('발표 기록을 불러오지 못했습니다.', e);
+    return [];
+  }
+}
+
+export interface HistorySlide {
+  slideIndex: number;
+  originalNote: string | null;
+  aiSummaryNote: string | null;
+  imageUrl: string | null;
+}
+
+export interface HistoryAnsweredQuestion {
+  questionId: string;
+  text: string;
+  nickname: string;
+  answeredAt: number | null;
+}
+
+export interface HistoryPresenter {
+  accountId: string | null;
+  name: string;
+  joinedAt: number;
+}
+
+export interface RoomHistoryDetail {
+  roomId: string;
+  title: string;
+  fileUrl: string | null;
+  hasScript: boolean;
+  scriptUrl: string | null;
+  totalTimeSeconds: number;
+  durationMinutes: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  presenters: HistoryPresenter[];
+  slides: HistorySlide[];
+  answeredQuestions: HistoryAnsweredQuestion[];
+}
+
+export async function fetchHistoryDetail(roomId: string, token: string): Promise<RoomHistoryDetail | null> {
+  try {
+    const res = await fetch(`${SERVER_URL}/rooms/${roomId}/history`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.history ?? null;
+  } catch (e) {
+    return null;
+  }
+}
+
+export async function deleteHistoryRoom(roomId: string, token: string): Promise<{ success: boolean; message?: string }> {
+  try {
+    const res = await fetch(`${SERVER_URL}/rooms/${roomId}/history`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json().catch(() => ({}));
+    return { success: res.ok && data.success !== false, message: data.message };
+  } catch (e) {
+    return { success: false, message: '서버에 연결할 수 없어요' };
+  }
+}

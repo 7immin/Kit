@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import { socket, fetchSlideImages, fetchSlideNotes, getLocalUserId } from '../lib/socket';
 import { enqueueAlert } from '../lib/alertQueue';
 import { useKitStore } from '../store/useKitStore';
+import { useAuthStore } from '../store/useAuthStore';
 import { EVENTS } from '../../shared/events';
 
 export function useSocketListeners() {
@@ -22,6 +23,7 @@ export function useSocketListeners() {
       useKitStore.setState({
         deckUploaded: hasFile,
         slideCount: typeof payload.slideCount === 'number' ? payload.slideCount : 0,
+        hasScript: !!payload.hasScript,
       });
 
       // 자료가 있는 방이면 슬라이드 이미지도 REST로 받아옴
@@ -89,7 +91,9 @@ export function useSocketListeners() {
     // 자료 업로드 완료 브로드캐스트: 업로드한 사람 이외의 다른 발표자 기기에 슬라이드 개수/이미지를 채워줌
     // (업로드한 사람 본인은 REST 응답으로 이미 직접 반영하므로 중복 처리는 아님)
     const onFileReady = (payload: any) => {
-      useKitStore.setState({ deckUploaded: true, slideCount: payload.slideCount });
+      // [신규] 새 발표자료가 올라오면 예전 AI 요약은 더 이상 최신 상태를 반영하지 않으므로
+      // AI 요약 버튼 잠금을 풀어줌 (본인이 아닌 다른 발표자 기기에도 동기화되게)
+      useKitStore.setState({ deckUploaded: true, slideCount: payload.slideCount, aiSummaryUsed: false });
       const roomId = useKitStore.getState().roomId;
       if (roomId) {
         fetchSlideImages(roomId).then((images) => useKitStore.getState().setSlideImages(images));
@@ -135,11 +139,15 @@ export function useSocketListeners() {
     const onConnect = () => {
       const { roomId, presenterCode, nickname } = useKitStore.getState();
       if (roomId && presenterCode) {
+        // [수정] index.tsx의 handleJoinWithCode와 같은 이유로 token을 같이 보내야 재연결
+        // 시에도 계정 연결이 계속 유지됨(안 그러면 재연결마다 계정 연결이 끊긴 채로 남을 수 있음)
+        const authToken = useAuthStore.getState().token;
         socket.emit(EVENTS.ROOM_JOIN_PRESENTER, {
           roomId,
           presenterCode,
           name: nickname || '발표자',
           userId: getLocalUserId(),
+          ...(authToken ? { token: authToken } : {}),
         });
       }
     };

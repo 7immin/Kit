@@ -1,9 +1,9 @@
 // mobile/app/remote.tsx
 import { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, Modal, Alert } from 'react-native';
+import { View, Text, StyleSheet, Pressable, Modal, Alert, ScrollView } from 'react-native';
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
 import { socket } from '../lib/socket';
 import { EVENTS } from '../../shared/events';
@@ -148,7 +148,12 @@ function NotesBlock() {
   return (
     <View style={styles.notesBlock}>
       <Text style={styles.notesLabel}>발표자 노트</Text>
-      <Text style={styles.notesText}>{note?.text || '이 슬라이드에는 등록된 노트가 없어요'}</Text>
+      {/* [수정] notesBlock이 flex:1이라 노트 내용이 길면 남은 공간을 넘어가는 부분이 화면 밖으로
+          잘려서 안 보였음. 라벨은 고정해두고 내용만 자체 스크롤되게 감싸서, 아무리 길어도
+          손가락으로 밀어서 끝까지 볼 수 있게 함. */}
+      <ScrollView style={styles.notesScroll} showsVerticalScrollIndicator>
+        <Text style={styles.notesText}>{note?.text || '이 슬라이드에는 등록된 노트가 없어요'}</Text>
+      </ScrollView>
     </View>
   );
 }
@@ -285,21 +290,26 @@ export default function RemoteScreen() {
     });
 
   return (
-    <GestureDetector gesture={swipeGesture}>
-      <View style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.headerEyebrow}>{isCurrentPresenter ? '발표 진행 중' : `${presenterName}님 발표 중`}</Text>
-          <View style={{ flex: 1 }} />
-          <QuestionBell />
-        </View>
+    // [수정] GestureHandlerRootView를 앱 전체(_layout.tsx)에 걸어뒀더니 Expo Go + 안드로이드에서
+    // 이 화면과 무관한 다른 화면들의 ScrollView 스크롤까지 먹통이 되는 부작용이 있었음. 이 스와이프
+    // 제스처는 remote 화면에서만 쓰이므로, 여기서만 감싸서 다른 화면에 영향이 없게 함.
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <GestureDetector gesture={swipeGesture}>
+        <View style={styles.container}>
+          <View style={styles.header}>
+            <Text style={styles.headerEyebrow}>{isCurrentPresenter ? '발표 진행 중' : `${presenterName}님 발표 중`}</Text>
+            <View style={{ flex: 1 }} />
+            <QuestionBell />
+          </View>
 
-        <SlidePreview />
-        <TimerBar />
-        <NavButtons />
-        <NotesBlock />
-        <BottomActions />
-      </View>
-    </GestureDetector>
+          <SlidePreview />
+          <TimerBar />
+          <NavButtons />
+          <NotesBlock />
+          <BottomActions />
+        </View>
+      </GestureDetector>
+    </GestureHandlerRootView>
   );
 }
 
@@ -353,6 +363,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.hairline,
   },
   notesLabel: { fontSize: 10.5, letterSpacing: 1, textTransform: 'uppercase', color: colors.inkFaint, marginBottom: 8 },
+  notesScroll: { flex: 1 },
   notesText: { fontSize: 14, lineHeight: 21, color: colors.ink },
 
   bottomRow: { flexDirection: 'row', gap: 10, paddingHorizontal: 20, paddingVertical: 16 },

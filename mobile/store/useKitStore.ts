@@ -43,6 +43,12 @@ interface KitData {
   title: string | null;
   slideNotes: { slideIndex: number; text: string }[];
   scriptProcessing: boolean;
+  // 대본이 업로드돼있는지(rooms.has_script) — AI 요약 버튼이 "대본 요약"과 "슬라이드 기반 생성" 중
+  // 뭘 하게 될지 표시하려면 필요함. 서버(room:joined/notes:ready/대본·AI 응답)가 주는 값을 그대로 따라감
+  hasScript: boolean;
+  // [신규] AI 요약/생성(POST /rooms/:roomId/slides/note/ai)을 이미 한 번 돌렸는지. 계속 눌러서
+  // 호출 제한에 걸리는 걸 막으려고, 한 번 돌리면 발표자료/대본을 새로 올리기 전까진 버튼을 잠근다.
+  aiSummaryUsed: boolean;
   deckUploaded: boolean;
   slideCount: number;
   currentNoteSlideIndex: number;
@@ -80,7 +86,7 @@ interface KitState extends KitData {
   setRoomJoined: (payload: Partial<KitData>) => void;
   setPresenterList: (presenters: Presenter[]) => void;
   setAudienceCount: (count: number) => void;
-  setNotesReady: (payload: { slideNotes: { slideIndex: number; text: string }[] }) => void;
+  setNotesReady: (payload: { slideNotes: { slideIndex: number; text: string }[]; hasScript?: boolean; source?: string }) => void;
   setSlideImages: (images: Record<number, string>) => void;
 
   setPresentationStarted: (payload: { durationMinutes: number; allowMidQuestions: boolean; anonymous: boolean }) => void;
@@ -110,6 +116,8 @@ const initialRoomState: KitData = {
   title: null,
   slideNotes: [],
   scriptProcessing: false,
+  hasScript: false,
+  aiSummaryUsed: false,
   deckUploaded: false,
   slideCount: 0,
   currentNoteSlideIndex: 1,
@@ -142,7 +150,18 @@ export const useKitStore = create<KitState>((set) => ({
   setRoomJoined: (payload) => set(payload),
   setPresenterList: (presenters) => set({ presenters }),
   setAudienceCount: (count) => set({ audienceCount: count }),
-  setNotesReady: (payload) => set({ slideNotes: payload.slideNotes, scriptProcessing: false }),
+  setNotesReady: (payload) =>
+    set({
+      slideNotes: payload.slideNotes,
+      scriptProcessing: false,
+      ...(payload.hasScript !== undefined ? { hasScript: payload.hasScript } : {}),
+      // [신규] source가 AI 요약/생성 결과("ai_summarize"/"ai_generate")면 잠금, 그 외(새 대본
+      // 업로드로 인한 자동 분할 "ai_context_split"/"auto_split" 등)면 다시 풀어줌. 방 안 모든
+      // 발표자에게 같은 브로드캐스트가 오므로, 이 값 하나로 전원의 잠금 상태가 동기화됨
+      ...(payload.source !== undefined
+        ? { aiSummaryUsed: payload.source === 'ai_summarize' || payload.source === 'ai_generate' }
+        : {}),
+    }),
   setSlideImages: (images) => set({ slideImages: images }),
 
   setPresentationStarted: (payload) =>
