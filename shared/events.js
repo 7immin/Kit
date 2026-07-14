@@ -73,6 +73,7 @@ const EVENTS = {
   //   currentFileUrl: string | null,
   //   slideCount?: number,        // presenter 입장에만 포함. currentFileUrl이 있을 때만 의미 있는 값
   //   hasScript?: boolean,        // presenter 입장에만 포함
+  //   aiNotesGenerated?: boolean, // presenter 입장에만 포함. true면 "AI 요약" 버튼 비활성화 상태로 그려야 함
   //   status?: 'wait' | 'progress' | 'end',   // display/audience 입장에만 포함
   //   allowMidQuestions?: boolean // audience 입장에만 포함
   // }
@@ -181,13 +182,19 @@ const EVENTS = {
   // payload: {
   //   slideNotes: Array<{ slideIndex: number, text: string, imageUrl: string | null }>,
   //   source: 'auto_split' | 'ai_summarize' | 'ai_generate' | 'manual',
-  //   hasScript: boolean
+  //   hasScript: boolean,
+  //   aiNotesGenerated: boolean
   // }
   // ※ [수정] imageUrl 추가. 노트 수정 화면이 이 이벤트만으로 텍스트+슬라이드 이미지를
   //   같이 그릴 수 있도록(별도로 GET /rooms/:roomId/slides를 다시 호출할 필요 없게) 함.
   // ※ [수정] hasScript 추가. "대본이 있다"는 사실이 rooms.has_script로 서버에 저장되므로,
   //   대본을 업로드/AI처리한 사람뿐 아니라 같은 방의 다른 발표자도 이 이벤트로 상태를 맞출 수 있다.
   //   재연결/늦은 입장 시엔 GET /rooms/:roomId의 hasScript 필드로 복구한다.
+  // ※ [신규] aiNotesGenerated 추가. rooms.ai_notes_generated 기준 — true면 "AI 요약" 버튼을
+  //   비활성화해야 함(같은 대본으로 Gemini를 또 호출하지 못하게 막기 위함). 대본을 다시
+  //   업로드하면(이 이벤트가 source:'ai_context_split'로 다시 오며 aiNotesGenerated:false를
+  //   실어 보냄) 버튼이 재활성화된다. POST /rooms/:roomId/slides/note/ai는 이미 생성된
+  //   상태에서 다시 호출되면 409를 응답하니, 프론트는 방어적으로 이 값을 신뢰하고 버튼을 막아야 한다.
 
   NOTE_SAVED: 'note:saved',
   // payload: { slideIndex: number, editedByName: string, newNote: string, imageUrl: string | null }
