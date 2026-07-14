@@ -117,7 +117,11 @@ export default function StartScreen() {
       {/* 최근 발표 목록 */}
       <Text style={styles.sectionTitle}>최근 발표</Text>
       {PLACEHOLDER_HISTORY.map((item) => (
-        <Pressable key={item.id} style={styles.recentCard}>
+        <Pressable
+          key={item.id}
+          style={styles.recentCard}
+          onPress={() => router.push({ pathname: '/history', params: { id: item.id } })}
+        >
           <View style={styles.recentThumb}>
             <Text style={{ color: colors.cue }}>▤</Text>
           </View>

@@ -8,6 +8,14 @@ import { EVENTS } from '../../shared/events';
 import { useKitStore } from '../store/useKitStore';
 import { colors, radius } from '../constants/theme';
 
+// 방 생성자 = 발표 시작 전엔 항상 현재 발표자 (shared/events.js 컨벤션 참고)
+function useIsHost() {
+  return useKitStore((s) => {
+    const me = s.presenters.find((p) => p.userId === s.userId);
+    return me?.isCurrentPresenter ?? false;
+  });
+}
+
 function AudienceCount() {
   const count = useKitStore((s) => s.audienceCount);
   return <Text style={styles.value}>청중 {count}명 입장</Text>;
@@ -28,12 +36,12 @@ function PresenterList() {
 }
 
 function TimeStepper() {
-  const [minutes, setMinutes] = useState(5);
+  const minutes = useKitStore((s) => s.durationMinutes);
   const roomId = useKitStore((s) => s.roomId);
 
   const change = (delta: number) => {
     const next = Math.min(60, Math.max(1, minutes + delta));
-    setMinutes(next);
+    useKitStore.setState({ durationMinutes: next });
     socket.emit(EVENTS.ROOM_SETTINGS_UPDATE, { roomId, durationMinutes: next });
   };
 
@@ -54,18 +62,18 @@ function TimeStepper() {
 }
 
 function SettingsToggles() {
-  const [allowMidQuestions, setAllowMidQuestions] = useState(true);
-  const [anonymous, setAnonymous] = useState(false);
+  const allowMidQuestions = useKitStore((s) => s.allowMidQuestions);
+  const anonymous = useKitStore((s) => s.anonymous);
   const roomId = useKitStore((s) => s.roomId);
 
   const toggleMidQ = () => {
     const next = !allowMidQuestions;
-    setAllowMidQuestions(next);
+    useKitStore.setState({ allowMidQuestions: next });
     socket.emit(EVENTS.ROOM_SETTINGS_UPDATE, { roomId, allowMidQuestions: next });
   };
   const toggleAnon = () => {
     const next = !anonymous;
-    setAnonymous(next);
+    useKitStore.setState({ anonymous: next });
     socket.emit(EVENTS.ROOM_SETTINGS_UPDATE, { roomId, anonymous: next });
   };
 
@@ -115,7 +123,10 @@ function DeckUploadButton() {
       const res = await fetch(`${SERVER_URL}/rooms/${roomId}/presentation`, {
         method: 'POST',
         body: formData,
-        headers: { 'Content-Type': 'multipart/form-data' },
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          'x-user-id': useKitStore.getState().userId ?? '',
+        },
       });
       const data = await res.json();
       if (data.success) {
@@ -176,17 +187,26 @@ function ScriptUploadButton() {
       const res = await fetch(`${SERVER_URL}/rooms/${roomId}/script`, {
         method: 'POST',
         body: formData,
-        headers: { 'Content-Type': 'multipart/form-data' },
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          'x-user-id': useKitStore.getState().userId ?? '',
+        },
       });
       const data = await res.json();
-      if (!data.success) {
+
+      if (data.success) {
+        // 소켓 이벤트를 기다리지 않고, REST 응답으로 바로 상태 갱신
+        useKitStore.setState({
+          slideNotes: data.slideNotes,
+          scriptProcessing: false,
+        });
+      } else {
         alert(data.message);
-        useKitStore.setState({ scriptProcessing: false }); // 버그 수정: 실패 시에도 로딩 상태 해제
+        useKitStore.setState({ scriptProcessing: false });
       }
-      // 성공 시 NOTES_READY 소켓 이벤트가 slideNotes/scriptProcessing을 갱신해줌
     } catch (e) {
       alert('업로드 실패, 서버 연결을 확인해주세요');
-      useKitStore.setState({ scriptProcessing: false }); // 네트워크 실패 시에도 동일하게 해제
+      useKitStore.setState({ scriptProcessing: false });
     } finally {
       setUploading(false);
     }
@@ -234,10 +254,32 @@ function NoteEditButton() {
   );
 }
 
+function StartPresentingButton() {
+  const [starting, setStarting] = useState(false);
+  const roomId = useKitStore((s) => s.roomId);
+
+  const handleStart = () => {
+    setStarting(true);
+    // PRESENTATION_STARTED 수신 시 useSocketListeners에서 store 갱신 + /remote로 자동 이동됨
+    socket.emit(EVENTS.PRESENTATION_START, {
+      durationMinutes: useKitStore.getState().durationMinutes,
+      allowMidQuestions: useKitStore.getState().allowMidQuestions,
+      anonymous: useKitStore.getState().anonymous,
+    });
+  };
+
+  return (
+    <Pressable style={styles.primaryButton} onPress={handleStart} disabled={starting}>
+      <Text style={styles.primaryButtonText}>{starting ? '시작하는 중...' : '발표 시작'}</Text>
+    </Pressable>
+  );
+}
+
 export default function WaitingScreen() {
   const title = useKitStore((s) => s.title);
   const displayCode = useKitStore((s) => s.displayCode);
   const presenterCode = useKitStore((s) => s.presenterCode);
+  const isHost = useIsHost();
 
   return (
     <View style={styles.container}>
@@ -267,12 +309,25 @@ export default function WaitingScreen() {
       <View style={{ height: 10 }} />
       <NoteEditButton />
 
-      <View style={{ height: 16 }} />
-      <SettingsToggles />
-      <View style={{ height: 10 }} />
-      <View style={styles.card}>
-        <TimeStepper />
-      </View>
+      {isHost ? (
+        <>
+          <View style={{ height: 16 }} />
+          <SettingsToggles />
+          <View style={{ height: 10 }} />
+          <View style={styles.card}>
+            <TimeStepper />
+          </View>
+          <View style={{ height: 20 }} />
+          <StartPresentingButton />
+        </>
+      ) : (
+        <>
+          <View style={{ height: 16 }} />
+          <View style={styles.card}>
+            <Text style={styles.value}>현재 발표자가 발표를 시작하면 자동으로 화면이 넘어가요</Text>
+          </View>
+        </>
+      )}
     </View>
   );
 }
@@ -325,4 +380,10 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface,
   },
   ghostButtonText: { color: colors.ink, fontSize: 14, fontWeight: '600' },
+
+  primaryButton: {
+    height: 52, borderRadius: radius.md, backgroundColor: colors.spot,
+    alignItems: 'center', justifyContent: 'center', marginBottom: 20,
+  },
+  primaryButtonText: { color: colors.spotInk, fontWeight: '700', fontSize: 15.5 },
 });
