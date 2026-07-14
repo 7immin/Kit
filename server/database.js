@@ -46,7 +46,7 @@ db.exec(`
     -- presenters_list 컬럼 삭제 -> session_presenters 테이블로 대체
   );
 
-  -- 신규: 발표 기록(스냅샷)을 위한 세션 참여자 조인 테이블
+  -- 발표 기록(스냅샷)을 위한 세션 참여자 조인 테이블
   CREATE TABLE IF NOT EXISTS session_presenters (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     room_id TEXT,                                   -- 어떤 방인지
@@ -61,7 +61,8 @@ db.exec(`
     socket_id TEXT,                     -- 통신을 위한 현재 소켓 ID (재연결 시 이 값만 업데이트됨)
     room_id TEXT,
     role TEXT,                          -- 'host', 'presenter', 'display', 'audience'
-    name TEXT                           -- 청중/발표자가 입장할 때 입력한 실제 이름
+    name TEXT,                          -- 청중/발표자가 입장할 때 입력한 실제 이름
+    joined_at INTEGER                   -- 최초 입장 시각 (재연결 시에도 덮어쓰지 않음, session_presenters 기록용)
   );
   
   -- 3. 슬라이드 & AI 노트 테이블
@@ -70,7 +71,8 @@ db.exec(`
     room_id TEXT,
     slide_index INTEGER,                
     original_note TEXT,                 
-    ai_summary_note TEXT                
+    ai_summary_note TEXT,
+    image_url TEXT                      -- PDF 페이지를 이미지로 변환해 저장한 PNG의 접근 경로 (PC·청중 동기화용)
   );
 
   -- 4. 질문 테이블
@@ -88,6 +90,20 @@ db.exec(`
     completed_at INTEGER                
   );
 `);
+
+// 이미 만들어져 있던 kit.db 파일에는 CREATE TABLE IF NOT EXISTS가 새 컬럼을 추가해주지 않으므로,
+// 기존 DB에도 안전하게 컬럼을 얹어준다. 이미 컬럼이 있으면(신규 DB) 에러가 나므로 무시한다.
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN joined_at INTEGER`);
+} catch (e) {
+  // "duplicate column name" 등 → 이미 최신 스키마이므로 무시
+}
+
+try {
+  db.exec(`ALTER TABLE slides ADD COLUMN image_url TEXT`);
+} catch (e) {
+  // 이미 컬럼이 있으면(신규 DB) 무시
+}
 
 console.log("KIT 데이터베이스 스펙 빌드 완료");
 module.exports = db;
