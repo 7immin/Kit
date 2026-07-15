@@ -284,33 +284,46 @@ sequenceDiagram
 
 ## 산출물 및 실행 방법
 
-- **산출물 설명:**
-- **실행 환경:**
-- **실행 방법:**
+- **산출물 설명:** 발표자 전용 모바일 앱(Expo/React Native), PC 디스플레이용 웹페이지, 청중 참여용 웹페이지 3개 클라이언트로 구성된 발표 보조 서비스. 발표자는 폰 하나로 슬라이드 제어·발표자 노트·타이머·질문 응답까지 처리하고, PC와 청중 화면은 Socket.io로 실시간 동기화된다.
+- **실행 환경:** 모바일 앱은 Expo Go 또는 EAS Build로 생성한 APK로 실행(Android/iOS), 웹 2종은 브라우저에서 바로 접속, 백엔드는 Node.js 서버(Railway 배포).
+- **실행 방법:** 아래 [실행 방법](#실행-방법) 참고. 배포된 버전은 웹은 Vercel, 서버는 Railway, 모바일 앱은 EAS Build로 만든 APK로 배포되어 있다.
 - **시연 영상 / 이미지:** (선택)
 
 ### 실행 방법
 
+레포는 `mobile`(Expo 앱) · `web`(청중/PC 웹) · `server`(Express + Socket.io) 3개 워크스페이스로 구성되어 있어, 각 폴더에서 따로 의존성을 설치하고 실행해야 한다.
+
 ```bash
-# 환경 설정
-cp .env.example .env
+# 1) 서버 (server/)
+cd server
+npm install
+# .env에 GEMINI_API_KEY, JWT_SECRET 설정
+npm run dev          # nodemon으로 실행, 기본 포트 4000
 
-# 의존성 설치
-npm install   # 또는 pip install -r requirements.txt 등
+# 2) 웹 (web/) — PC 디스플레이 화면 + 청중 화면
+cd web
+npm install
+npm run dev           # Vite 개발 서버
 
-# 실행
-npm run dev   # 또는 python main.py 등
+# 3) 모바일 앱 (mobile/) — 발표자용
+cd mobile
+npm install
+npm run start          # Expo 개발 서버, Expo Go 앱으로 QR 스캔해 접속
+# 배포용 APK가 필요하면:
+# eas build --platform android --profile preview
 ```
+
+> 로컬 개발 시 `web/src/lib/socket.js`, `mobile/lib/socket.ts`의 서버 주소가 배포된 Railway 주소로 고정되어 있으므로, 로컬 서버로 붙이려면 해당 주소를 `http://localhost:4000`으로 바꿔야 한다.
 
 ### 기술 구성
 
 | 분류 | 사용 기술 |
 |---|---|
-| 핵심 기술 |  |
-| 실행 환경 |  |
-| 데이터 저장 | Railway |
-| 외부 API / 서비스 |  |
-| 기타 |  |
+| 핵심 기술 | Socket.io(WebSocket) 기반 실시간 동기화(슬라이드 제어, 타이머, 질문), Google Gemini API를 활용한 LLM Wrapper(대본 자동 분할, 발표자 노트 요약/생성) |
+| 실행 환경 | Node.js ≥ 22.13.0(서버), Expo SDK 54 · React Native 0.81 · React 19(모바일), Vite 8 · React 19(웹) |
+| 데이터 저장 | SQLite(`better-sqlite3`) — Railway 볼륨에 파일로 저장. 업로드된 PDF·슬라이드 PNG·대본 파일은 서버 파일시스템에 저장 후 정적 서빙 |
+| 외부 API / 서비스 | Google Gemini API(`@google/generative-ai`, `gemini-3.1-flash-lite`) · Railway(백엔드 배포) · Vercel(웹 배포) · EAS Build(모바일 앱 빌드) |
+| 기타 | `bcrypt`(비밀번호 해시) · `jsonwebtoken`(로그인 인증) · `multer`(파일 업로드) · `mammoth`(DOCX 텍스트 추출) · `pdf-to-png-converter`(슬라이드 이미지 변환) · `jsonrepair`(AI JSON 응답 보정) · `zustand`(모바일 앱 상태 관리) |
 
 ---
 
@@ -320,31 +333,35 @@ npm run dev   # 또는 python main.py 등
 
 ### Keep — 잘 된 점, 다음에도 유지할 것
 
--
--
--
+- 프론트(모바일·웹)와 백엔드를 초반에 `shared/events.js`로 소켓 이벤트 규격을 먼저 합의하고 시작해서, 각자 병렬로 개발하고도 연결 테스트에서 큰 충돌 없이 붙었다.
+- 기능 단위로 우선순위(필수/선택)를 나눠 구현 명세서를 작성해두니, 일정이 빠듯해졌을 때 무엇을 먼저 포기할지 판단이 쉬웠다.
+- 배포까지 마감 전에 미리 시도해봐서(Railway/Vercel/EAS), 당일 데모 직전에 배포 이슈로 당황하는 상황을 피할 수 있었다.
 
 ### Problem — 아쉬웠던 점, 개선이 필요한 것
 
--
--
--
+- 레포에 대한 GitHub 조직 권한이 없어 GitHub 연동 배포를 못 쓰고 CLI(`railway up`, `vercel --prod`)로 우회해야 했다 — 이 때문에 자동 재배포가 안 되고, 코드가 바뀔 때마다 수동으로 다시 올려야 했다.
+- 개발 환경에서 파일 저장 시 간헐적으로 파일이 잘리는 문제가 있어, 수정할 때마다 결과물을 다시 검증해야 하는 번거로움이 있었다.
+- 문서화(README, 발표자료)를 마지막 날에 몰아서 하게 되어, 회고나 설계 문서 작성에 쓸 시간이 부족했다.
 
 ### Try — 다음번에 시도해볼 것
 
--
--
--
+- 배포는 초반(Day 1~2)에 최소 기능으로라도 한 번 먼저 끝내두고, 그 위에 기능을 얹는 방식으로 진행해보기.
+- README/설계 문서를 매일 조금씩 갱신해서 마지막 날 몰아쓰지 않기.
+- 실시간 동기화 로직처럼 여러 클라이언트가 얽히는 부분은 초반에 간단한 시퀀스 다이어그램으로 먼저 그려보고 구현 시작하기.
 
 ### 팀원별 소감
 
 **김민:**
 
-> 
+> - 2주차라 그런지 밤을 한 번도 새지 않고 끝낼 수 있어서 행복했다.
+> - 듀얼 모니터를 알차게 쓸 수 있는 자리여서 좋았다.
+> - 팀원과 잘 맞아서 2주차 내내 웃으면서 개발했어서 너무 재밌었다!
 
 **김규민:**
 
-> 
+> - 첫 주차에 비해 계획대로 잘 흘러가서 여유있게 마무리할 수 있어서 좋았다.
+> - 앱 배포를 처음 해봐서 새로웠다.
+> - 팀원과 합이 잘 맞아서 시간 가는 줄 몰랐다.
 
 ---
 
