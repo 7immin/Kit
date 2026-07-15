@@ -14,3 +14,19 @@ export const colors = {
 };
 
 export const radius = { lg: 28, md: 16, sm: 10 };
+
+// 앱 전체는 라이트 톤 단일 팔레트(colors)만 쓰고 별도 다크 테마는 없음.
+// use-theme-color 등 Expo 템플릿 잔재 컴포넌트가 기대하는 light/dark 형태로 매핑만 해준다.
+const themeTone = {
+  text: colors.ink,
+  background: colors.canvas,
+  tint: colors.spot,
+  icon: colors.inkDim,
+  tabIconDefault: colors.inkFaint,
+  tabIconSelected: colors.spot,
+};
+
+export const Colors = {
+  light: themeTone,
+  dark: themeTone,
+};

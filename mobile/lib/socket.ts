@@ -1,8 +1,8 @@
 // mobile/lib/socket.ts
 import { io, Socket } from 'socket.io-client';
 
-// B의 서버가 실행 중인 로컬 IP:포트 (변경 시 여기만 고치면 됨)
-export const SERVER_URL = 'http://10.249.89.40:4000';
+// Railway에 배포된 백엔드 주소 (변경 시 여기만 고치면 됨)
+export const SERVER_URL = 'https://kit-production-1af1.up.railway.app';
 
 export const socket: Socket = io(SERVER_URL, {
   autoConnect: false,

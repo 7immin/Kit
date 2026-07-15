@@ -48,6 +48,8 @@ const fs = require('fs');
 
 // node를 어느 경로에서 실행하든 항상 같은 폴더를 가리키도록 절대경로로 고정
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
+// uploads/는 .gitignore되어 있어 배포 환경(특히 Volume 마운트 경로)에는 디렉터리 자체가 없을 수 있음
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const upload = multer({ dest: UPLOAD_DIR });
 
 const mammoth = require('mammoth');

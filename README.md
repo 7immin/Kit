@@ -256,6 +256,7 @@ sequenceDiagram
 
 <!-- DB 스키마, JSON 구조, 파일 저장 방식 등 -->
 **KIT 서비스 ERD**
+
 <img width="1139" height="927" alt="Image" src="https://github.com/user-attachments/assets/5f9157d9-3ee4-4cc8-983c-86a7d8962b7c" />
 
 ### API / 외부 서비스 연동

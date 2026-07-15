@@ -1,6 +1,12 @@
 // server/database.js
+const fs = require('fs');
+const path = require('path');
 const Database = require('better-sqlite3');
-const db = new Database(process.env.DB_PATH || 'kit.db');
+
+const DB_PATH = process.env.DB_PATH || 'kit.db';
+// Volume 마운트 경로(예: /data/kit.db)처럼 하위 디렉터리가 아직 없을 수 있으므로 미리 생성
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+const db = new Database(DB_PATH);
 
 db.exec(`
   -- 0. 회원 테이블
