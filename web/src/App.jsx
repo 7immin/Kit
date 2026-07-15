@@ -4,7 +4,9 @@ import { io } from 'socket.io-client';
 import { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react'; 
 
-const socket = io(`http://${window.location.hostname}:4000`);
+const API_BASE = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:4000`;
+
+const socket = io(API_BASE);
 
 // [신규] 재연결해도 같은 사람으로 인식되도록, 역할별로 고정 userId를 localStorage에 보관해두고
 // 매번 join/create 이벤트에 실어보낸다. (서버가 이 값을 신원으로 그대로 신뢰함 — events.js 참고)
@@ -16,8 +18,6 @@ const getOrCreateUserId = (storageKey) => {
   }
   return id;
 };
-
-const API_BASE = `http://${window.location.hostname}:4000`;
 
 // [테스트용] 로그인 토큰(JWT) + 계정 정보를 localStorage에 보관/조회
 const getStoredAuth = () => {

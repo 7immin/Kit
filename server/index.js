@@ -47,7 +47,7 @@ const multer = require('multer');
 const fs = require('fs');
 
 // node를 어느 경로에서 실행하든 항상 같은 폴더를 가리키도록 절대경로로 고정
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 const upload = multer({ dest: UPLOAD_DIR });
 
 const mammoth = require('mammoth');
@@ -1407,7 +1407,7 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = 4000;
+const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
   console.log(`KIT 백엔드 서버 구동 중: http://localhost:${PORT}`);
 });
