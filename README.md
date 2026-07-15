@@ -306,11 +306,11 @@ npm run dev   # 또는 python main.py 등
 
 | 분류 | 사용 기술 |
 |---|---|
-| 핵심 기술 |  |
-| 실행 환경 |  |
-| 데이터 저장 | Railway |
-| 외부 API / 서비스 |  |
-| 기타 |  |
+| 핵심 기술 | Node.js + Express 5(REST API), Socket.io 4(실시간 통신) · React 19 + Vite(PC/청중 웹) · React Native + Expo SDK 54(모바일 앱) |
+| 실행 환경 | 서버: Node.js(Railway) · 웹: 브라우저 · 모바일: Expo |
+| 데이터 저장 | SQLite(`better-sqlite3`), Railway Volume |
+| 외부 API / 서비스 | Google Gemini API(`@google/generative-ai`, `gemini-3.1-flash-lite`) · Railway(백엔드 배포) |
+| 기타 | 인증: `jsonwebtoken`(JWT) + `bcrypt`(비밀번호 해시) · 업로드: `multer`, `pdf-to-png-converter`, `mammoth`(DOCX 파싱) · QR 코드 생성: `qrcode.react` · 라우팅: `react-router-dom` / `expo-router` |
 
 ---
 
