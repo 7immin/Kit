@@ -261,46 +261,59 @@ sequenceDiagram
 
 ### API / 외부 서비스 연동
 
-| Method / 방식 | Endpoint / 서비스 | 설명 | 요청 | 응답 | 비고 |
-|---|---|---|---|---|---|
-| POST | `/auth/signup` | 회원가입 | `{ email, password, name }` | `{ success, token, accountId, name }` | 비밀번호는 영문+숫자+특수문자 8~12자 정규식 검증, bcrypt 해시 저장 |
-| POST | `/auth/login` | 로그인 | `{ email, password }` | `{ success, token, accountId, name }` | JWT 30일 만료 |
-| GET | `/auth/me` | 로그인 토큰 유효성 확인 | Header `Authorization: Bearer <token>` | `{ success, accountId, name }` | 새로고침 시 로그인 상태 복구용 |
-| POST | `/rooms/:roomId/presentation` | 발표 자료(PDF) 업로드 → 슬라이드 이미지 변환 | multipart `presentationFile`(PDF), `ownerId` | `{ success, slideCount, fileUrl, images[] }` | `pdf-to-png-converter`로 페이지별 PNG 생성 + DB 저장, 완료 시 소켓 `file:ready` 브로드캐스트 |
-| POST | `/rooms/:roomId/script` | 대본 업로드 → AI가 슬라이드별로 자동 분할 | multipart `scriptFile`(DOCX/TXT) | `{ success, slideCount, slideNotes[] }` | `mammoth`로 텍스트 추출 후 Gemini 호출(아래 외부 서비스 참고), 완료 시 `notes:ready` 브로드캐스트 |
-| POST | `/rooms/:roomId/slides/note/ai` | AI 발표자 노트 요약/생성 | (body 없음, `roomId`만 사용) | `{ success, slideNotes[] }` / 409(이미 생성됨) | 대본 있으면 요약, 없으면 PDF 기반 생성. 슬라이드당 Gemini 1회 호출(동시 3개로 제한), `rooms.ai_notes_generated`로 같은 대본 기준 중복 호출 차단 |
-| PUT | `/rooms/:roomId/slides/:slideIndex/note` | 발표자 노트 수동 수정 | `{ newNote, editedByName }` | `{ success }` | 같은 방의 다른 발표자에게 `note:saved` 브로드캐스트 |
-| GET | `/rooms/:roomId` | 방 현재 상태 조회 | - | `{ success, room: {...} }` | 재연결·늦은 입장 시 소켓 이벤트를 놓쳤을 때 상태 복구용. 접속 코드(presenter/display/audience code)는 내려주지 않음 |
-| GET | `/rooms/:roomId/slides` | 슬라이드 + 노트 목록 조회 | - | `{ success, slides[] }` | 노트 수정 화면 등 늦게 입장한 클라이언트의 초기 로딩용 |
-| GET | `/rooms/:roomId/questions` | 질문 목록 조회 | - | `{ success, questions[] }` | 완료된 질문은 `completed_at`, 나머지는 `created_at` 기준 정렬 |
-| GET | `/accounts/me/rooms` | 로그인 계정의 이전 발표 기록 목록 | Header `Authorization` | `{ success, rooms[] }` | 방장뿐 아니라 참여 발표자로 들어갔던 방도 포함, 계정이 숨긴 기록은 제외 |
-| DELETE | `/rooms/:roomId/history` | 발표 기록 삭제 | Header `Authorization` | `{ success }` | 실제 방/자료는 지우지 않고 요청 계정의 목록에서만 숨김 처리 |
-| GET | `/rooms/:roomId/history` | 발표 기록 상세 조회 | Header `Authorization` | `{ success, history: {...} }` | 슬라이드/노트/답변한 질문/발표자 목록 포함. "다시 발표하기"(`room:create_from_history`)의 원본 데이터로도 재사용 |
-| GET (static) | `/files/:filename` | 업로드 파일(발표자료 PDF, 슬라이드 PNG, 대본) 서빙 | - | 파일 바이너리 | `express.static(UPLOAD_DIR)` |
-| WebSocket | Socket.io 이벤트 전체 | 방 입장, 슬라이드 제어, 타이머, 질문 등 실시간 동기화 | — | — | 이벤트 목록·payload는 `shared/events.js` 및 위 [WebSocket 구조도](#실시간-인터랙션-websocketsocketio-구조도) 참고 |
-| REST (외부) | Google Gemini API — `generateContent` | 대본→슬라이드 매칭, 발표자 노트 요약/생성 | 프롬프트 텍스트(+PDF Base64 첨부 가능), JSON 응답 시 `responseSchema`로 형식 강제 | 텍스트 또는 스키마 강제 JSON | SDK `@google/generative-ai`, model `gemini-3.1-flash-lite`. 429(rate limit) 시 응답의 `retryDelay`만큼 대기 후 재시도, 응답이 깨지면 `jsonrepair`로 보정. 자세한 흐름은 위 [API 연동 흐름도](#llm-wrapper-api-연동-흐름도-gemini) 참고 |
+| Method / 방식 | Endpoint / 서비스 | 설명 | 요청 | 응답 |
+|---|---|---|---|---|
+| POST | `/auth/signup` | 회원가입. 비밀번호는 영문+숫자+특수문자 8~12자 정규식 검증, bcrypt 해시 저장 | `{ email, password, name }` | `{ success, token, accountId, name }` |
+| POST | `/auth/login` | 로그인. JWT 30일 만료 | `{ email, password }` | `{ success, token, accountId, name }` |
+| GET | `/auth/me` | 로그인 토큰 유효성 확인. 새로고침 시 로그인 상태 복구용 | Header `Authorization: Bearer <token>` | `{ success, accountId, name }` |
+| POST | `/rooms/:roomId/presentation` | 발표 자료(PDF) 업로드 → 슬라이드 이미지 변환. `pdf-to-png-converter`로 페이지별 PNG 생성 + DB 저장, 완료 시 소켓 `file:ready` 브로드캐스트 | multipart `presentationFile`(PDF), `ownerId` | `{ success, slideCount, fileUrl, images[] }` |
+| POST | `/rooms/:roomId/script` | 대본 업로드 → AI가 슬라이드별로 자동 분할. `mammoth`로 텍스트 추출 후 Gemini 호출(아래 외부 서비스 참고), 완료 시 `notes:ready` 브로드캐스트 | multipart `scriptFile`(DOCX/TXT) | `{ success, slideCount, slideNotes[] }` |
+| POST | `/rooms/:roomId/slides/note/ai` | AI 발표자 노트 요약/생성. 대본 있으면 요약, 없으면 PDF 기반 생성. 슬라이드당 Gemini 1회 호출(동시 3개로 제한), `rooms.ai_notes_generated`로 같은 대본 기준 중복 호출 차단 | (body 없음, `roomId`만 사용) | `{ success, slideNotes[] }` / 409(이미 생성됨) |
+| PUT | `/rooms/:roomId/slides/:slideIndex/note` | 발표자 노트 수동 수정. 같은 방의 다른 발표자에게 `note:saved` 브로드캐스트 | `{ newNote, editedByName }` | `{ success }` |
+| GET | `/rooms/:roomId` | 방 현재 상태 조회. 재연결·늦은 입장 시 소켓 이벤트를 놓쳤을 때 상태 복구용. 접속 코드(presenter/display/audience code)는 내려주지 않음 | - | `{ success, room: {...} }` |
+| GET | `/rooms/:roomId/slides` | 슬라이드 + 노트 목록 조회. 노트 수정 화면 등 늦게 입장한 클라이언트의 초기 로딩용 | - | `{ success, slides[] }` |
+| GET | `/rooms/:roomId/questions` | 질문 목록 조회. 완료된 질문은 `completed_at`, 나머지는 `created_at` 기준 정렬 | - | `{ success, questions[] }` |
+| GET | `/accounts/me/rooms` | 로그인 계정의 이전 발표 기록 목록. 방장뿐 아니라 참여 발표자로 들어갔던 방도 포함, 계정이 숨긴 기록은 제외 | Header `Authorization` | `{ success, rooms[] }` |
+| DELETE | `/rooms/:roomId/history` | 발표 기록 삭제. 실제 방/자료는 지우지 않고 요청 계정의 목록에서만 숨김 처리 | Header `Authorization` | `{ success }` |
+| GET | `/rooms/:roomId/history` | 발표 기록 상세 조회. 슬라이드/노트/답변한 질문/발표자 목록 포함. "다시 발표하기"(`room:create_from_history`)의 원본 데이터로도 재사용 | Header `Authorization` | `{ success, history: {...} }` |
+| GET (static) | `/files/:filename` | 업로드 파일(발표자료 PDF, 슬라이드 PNG, 대본) 서빙. `express.static(UPLOAD_DIR)` | - | 파일 바이너리 |
+| WebSocket | Socket.io 이벤트 전체 | 방 입장, 슬라이드 제어, 타이머, 질문 등 실시간 동기화. 이벤트 목록·payload는 `shared/events.js` 및 위 [WebSocket 구조도](#실시간-인터랙션-websocketsocketio-구조도) 참고 | — | — |
+| REST (외부) | Google Gemini API — `generateContent` (`@google/generative-ai`, model `gemini-3.1-flash-lite`) | 대본→슬라이드 매칭, 발표자 노트 요약/생성. 429(rate limit) 시 응답의 `retryDelay`만큼 대기 후 재시도, 응답이 깨지면 `jsonrepair`로 보정. 자세한 흐름은 위 [API 연동 흐름도](#llm-wrapper-api-연동-흐름도-gemini) 참고 | 프롬프트 텍스트(+PDF Base64 첨부 가능), JSON 응답 시 `responseSchema`로 형식 강제 | 텍스트 또는 스키마 강제 JSON |
 
 ---
 
 ## 산출물 및 실행 방법
 
-- **산출물 설명:**
-- **실행 환경:**
-- **실행 방법:**
+- **산출물 설명:** 발표자 전용 모바일 앱(Expo/React Native), PC 디스플레이용 웹페이지, 청중 참여용 웹페이지 3개 클라이언트로 구성된 발표 보조 서비스. 발표자는 폰 하나로 슬라이드 제어·발표자 노트·타이머·질문 응답까지 처리하고, PC와 청중 화면은 Socket.io로 실시간 동기화된다.
+- **실행 환경:** 모바일 앱은 Expo Go 또는 EAS Build로 생성한 APK로 실행(Android/iOS), 웹 2종은 브라우저에서 바로 접속, 백엔드는 Node.js 서버(Railway 배포).
+- **실행 방법:** 아래 [실행 방법](#실행-방법) 참고. 배포된 버전은 웹은 Vercel, 서버는 Railway, 모바일 앱은 EAS Build로 만든 APK로 배포되어 있다.
 - **시연 영상 / 이미지:** (선택)
 
 ### 실행 방법
 
+레포는 `mobile`(Expo 앱) · `web`(청중/PC 웹) · `server`(Express + Socket.io) 3개 워크스페이스로 구성되어 있어, 각 폴더에서 따로 의존성을 설치하고 실행해야 한다.
+
 ```bash
-# 환경 설정
-cp .env.example .env
+# 1) 서버 (server/)
+cd server
+npm install
+# .env에 GEMINI_API_KEY, JWT_SECRET 설정
+npm run dev          # nodemon으로 실행, 기본 포트 4000
 
-# 의존성 설치
-npm install   # 또는 pip install -r requirements.txt 등
+# 2) 웹 (web/) — PC 디스플레이 화면 + 청중 화면
+cd web
+npm install
+npm run dev           # Vite 개발 서버
 
-# 실행
-npm run dev   # 또는 python main.py 등
+# 3) 모바일 앱 (mobile/) — 발표자용
+cd mobile
+npm install
+npm run start          # Expo 개발 서버, Expo Go 앱으로 QR 스캔해 접속
+# 배포용 APK가 필요하면:
+# eas build --platform android --profile preview
 ```
+
+> 로컬 개발 시 `web/src/lib/socket.js`, `mobile/lib/socket.ts`의 서버 주소가 배포된 Railway 주소로 고정되어 있으므로, 로컬 서버로 붙이려면 해당 주소를 `http://localhost:4000`으로 바꿔야 한다.
 
 ### 기술 구성
 
@@ -320,31 +333,33 @@ npm run dev   # 또는 python main.py 등
 
 ### Keep — 잘 된 점, 다음에도 유지할 것
 
--
--
--
+- 프론트(모바일·웹)와 백엔드를 초반에 `shared/events.js`로 소켓 이벤트 규격을 먼저 합의하고 시작해서, 각자 병렬로 개발하고도 연결 테스트에서 큰 충돌 없이 붙었다.
+- 기능 단위로 우선순위(필수/선택)를 나눠 구현 명세서를 작성해두니, 일정이 빠듯해졌을 때 무엇을 먼저 포기할지 판단이 쉬웠다.
+- 배포까지 마감 전에 미리 시도해봐서(Railway/Vercel/EAS), 당일 데모 직전에 배포 이슈로 당황하는 상황을 피할 수 있었다.
 
 ### Problem — 아쉬웠던 점, 개선이 필요한 것
 
--
--
--
+- 레포에 대한 GitHub 조직 권한이 없어 GitHub 연동 배포를 못 쓰고 CLI(`railway up`, `vercel --prod`)로 우회해야 했다 — 이 때문에 자동 재배포가 안 되고, 코드가 바뀔 때마다 수동으로 다시 올려야 했다.
+- 개발 환경에서 파일 저장 시 간헐적으로 파일이 잘리는 문제가 있어, 수정할 때마다 결과물을 다시 검증해야 하는 번거로움이 있었다.
 
 ### Try — 다음번에 시도해볼 것
 
--
--
--
+- 배포는 초반(Day 1~2)에 최소 기능으로라도 한 번 먼저 끝내두고, 그 위에 기능을 얹는 방식으로 진행해보기.
+- 실시간 동기화 로직처럼 여러 클라이언트가 얽히는 부분은 초반에 간단한 시퀀스 다이어그램으로 먼저 그려보고 구현 시작하기.
 
 ### 팀원별 소감
 
 **김민:**
 
-> 
+> - 2주차라 그런지 밤을 한 번도 새지 않고 끝낼 수 있어서 행복했다.
+> - 듀얼 모니터를 알차게 쓸 수 있는 자리여서 좋았다.
+> - 팀원과 잘 맞아서 2주차 내내 웃으면서 개발했어서 너무 재밌었다!
 
 **김규민:**
 
-> 
+> - 첫 주차에 비해 계획대로 잘 흘러가서 여유있게 마무리할 수 있어서 좋았다.
+> - 앱 배포를 처음 해봐서 새로웠다.
+> - 팀원과 합이 잘 맞아서 시간 가는 줄 몰랐다.
 
 ---
 
