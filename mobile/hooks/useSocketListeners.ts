@@ -1,5 +1,6 @@
 // mobile/hooks/useSocketListeners.ts (전체, 발표 시작/타이머/슬라이드/질문 리스너 추가된 버전)
 import { useEffect } from 'react';
+import { Vibration } from 'react-native';
 import { router } from 'expo-router';
 import { socket, fetchSlideImages, fetchSlideNotes, getLocalUserId } from '../lib/socket';
 import { enqueueAlert } from '../lib/alertQueue';
@@ -118,7 +119,16 @@ export function useSocketListeners() {
     };
 
     const onSlideChanged = (payload: any) => useKitStore.getState().setSlideChanged(payload.slideIndex);
-    const onTimerUpdate = (payload: any) => useKitStore.getState().setTimerUpdate(payload);
+    // [신규] 타이머가 "초과 시간"으로 넘어가는 그 순간에만 진동을 울림. TIMER_UPDATE는 매초
+    // 오는데 isOvertime이 true인 동안 매번 진동시키면 계속 부르르 떨게 되니까, 직전 상태(false)
+    // → 지금(true)로 바뀌는 딱 한 번의 전환(edge)만 감지해서 한 번만 울린다.
+    const onTimerUpdate = (payload: any) => {
+      const wasOvertime = useKitStore.getState().isOvertime;
+      useKitStore.getState().setTimerUpdate(payload);
+      if (!wasOvertime && payload.isOvertime) {
+        Vibration.vibrate([0, 400, 200, 400, 200, 400]);
+      }
+    };
 
     const onQuestionNew = (payload: any) => useKitStore.getState().setQuestionNew(payload);
     const onQuestionAnsweringStarted = (payload: any) => useKitStore.getState().setQuestionAnsweringStarted(payload);

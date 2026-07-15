@@ -6,8 +6,13 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useLocalSearchParams, router } from 'expo-router';
 import { View, Text, StyleSheet, Pressable, ScrollView, Alert, ActivityIndicator, Linking } from 'react-native';
-import * as FileSystem from 'expo-file-system';
+// [수정] expo-file-system v19(SDK 54)부터 기본 진입점(expo-file-system)이 새 File/Directory
+// 클래스 기반 API로 바뀌면서 downloadAsync/cacheDirectory가 전부 빠졌음(둘 다 undefined가 되어
+// 호출 시 조용히 TypeError가 나고 아래 try/catch에 걸려 "다운로드 실패"만 계속 떴던 원인).
+// 예전 방식 그대로 쓰려면 legacy 서브패스로 임포트해야 함.
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { socket, fetchHistoryDetail, deleteHistoryRoom, SERVER_URL, type RoomHistoryDetail } from '../lib/socket';
 import { EVENTS } from '../../shared/events';
 import { useAuthStore } from '../store/useAuthStore';
@@ -40,6 +45,14 @@ function fileNameFromUrl(url: string | null | undefined) {
   }
 }
 
+// [신규] 확장자로 파일 종류를 판별해서 아이콘/라벨을 결정 — 호출부에서 매번 아이콘을 안 넘겨도 되게 함
+function fileKindFromName(name: string | null) {
+  const ext = (name?.split('.').pop() || '').toLowerCase();
+  if (ext === 'pdf') return { icon: 'document-text-outline' as const, label: '발표 자료 · PDF' };
+  if (ext === 'txt' || ext === 'doc' || ext === 'docx') return { icon: 'reader-outline' as const, label: '발표 대본 · ' + ext.toUpperCase() };
+  return { icon: 'document-outline' as const, label: '파일' };
+}
+
 function toAbsoluteUrl(url: string) {
   return url.startsWith('http') ? url : `${SERVER_URL}${url}`;
 }
@@ -69,10 +82,13 @@ async function downloadFile(url: string, fileName: string) {
   await Sharing.shareAsync(uri);
 }
 
-// [신규] 파일명 + "열람"(브라우저로 열기)에 "다운로드"(공유 시트로 기기에 저장) 버튼을 추가한 행
-function FileRow({ url, icon, style }: { url: string; icon: string; style?: any }) {
+// [수정] 아이콘만 있는 작은 다운로드 버튼 하나로 "미리보기"와 "다운로드"를 구분 없이 눌러야 했던
+// 것을, 파일 정보(아이콘+이름+종류)와 "미리보기"/"다운로드" 두 버튼을 명확히 분리한 카드로 바꿈 —
+// 어떤 버튼이 뭘 하는지 라벨이 바로 보이게.
+function FileRow({ url, style }: { url: string; style?: any }) {
   const [downloading, setDownloading] = useState(false);
   const name = fileNameFromUrl(url);
+  const { icon, label } = fileKindFromName(name);
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -86,20 +102,36 @@ function FileRow({ url, icon, style }: { url: string; icon: string; style?: any 
   };
 
   return (
-    <View style={[styles.fileRow, style]}>
-      <Pressable style={styles.fileMain} onPress={() => openFile(url)}>
+    <View style={[styles.fileCard, style]}>
+      <View style={styles.fileCardHeader}>
         <View style={styles.fileIcon}>
-          <Text style={{ color: colors.cue }}>{icon}</Text>
+          <Ionicons name={icon} size={19} color={colors.cue} />
         </View>
-        <Text style={styles.fileName} numberOfLines={1}>{name}</Text>
-      </Pressable>
-      <Pressable style={styles.fileDownloadBtn} onPress={handleDownload} disabled={downloading}>
-        {downloading ? (
-          <ActivityIndicator size="small" color={colors.cue} />
-        ) : (
-          <Text style={styles.fileDownloadIcon}>⬇</Text>
-        )}
-      </Pressable>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.fileName} numberOfLines={1}>{name}</Text>
+          <Text style={styles.fileType}>{label}</Text>
+        </View>
+      </View>
+      <View style={styles.fileActions}>
+        <Pressable style={styles.fileActionBtn} onPress={() => openFile(url)}>
+          <Ionicons name="eye-outline" size={15} color={colors.ink} />
+          <Text style={styles.fileActionText}>미리보기</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.fileActionBtn, styles.fileActionBtnPrimary]}
+          onPress={handleDownload}
+          disabled={downloading}
+        >
+          {downloading ? (
+            <ActivityIndicator size="small" color={colors.spotInk} />
+          ) : (
+            <Ionicons name="download-outline" size={15} color={colors.spotInk} />
+          )}
+          <Text style={[styles.fileActionText, styles.fileActionTextPrimary]}>
+            {downloading ? '다운로드 중...' : '다운로드'}
+          </Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -178,7 +210,8 @@ function RestartButton({ roomId, title, hasFile }: { roomId: string; title: stri
 
   return (
     <Pressable style={[styles.restartButton, starting && styles.disabled]} onPress={handlePress} disabled={starting}>
-      <Text style={styles.restartButtonText}>{starting ? '방 만드는 중...' : '↻ 이 설정으로 다시 발표하기'}</Text>
+      <Ionicons name="reload-outline" size={16} color={colors.spotInk} style={{ marginRight: 8 }} />
+      <Text style={styles.restartButtonText}>{starting ? '방 만드는 중...' : '이 설정으로 다시 발표하기'}</Text>
     </Pressable>
   );
 }
@@ -192,7 +225,7 @@ export default function HistoryDetailScreen() {
   const [deleting, setDeleting] = useState(false);
 
   // 목록 화면(GET /accounts/me/rooms)엔 참여 청중 수가 있는데, 상세 API(GET /rooms/:roomId/history)엔
-  // 없어서 목록에서 넘어올 때 navigation param으로 받아둠. 기록 링크를 직접 열람하는 등 param이
+  // 없어서 목록에서 넘어올 때 navigation param으로 같이 받아둠. 기록 링크를 직접 열람하는 등 param이
   // 없는 경로로 들어오면 그냥 숨김.
   const totalAudience = totalAudienceParam ? Number(totalAudienceParam) : null;
 
@@ -269,7 +302,7 @@ export default function HistoryDetailScreen() {
             <View style={styles.heroCard}>
               <View style={styles.heroRow}>
                 <View style={styles.heroIcon}>
-                  <Text style={{ color: colors.cue }}>⏱</Text>
+                  <Ionicons name="time-outline" size={18} color={colors.cue} />
                 </View>
                 <View>
                   <Text style={styles.heroValue}>{formatDuration(detail.totalTimeSeconds ?? 0)}</Text>
@@ -298,7 +331,7 @@ export default function HistoryDetailScreen() {
               {totalAudience !== null && (
                 <View style={[styles.heroRow, styles.heroRowDivider]}>
                   <View style={styles.heroIcon}>
-                    <Text style={{ color: colors.cue }}>👥</Text>
+                    <Ionicons name="people-outline" size={18} color={colors.cue} />
                   </View>
                   <View>
                     <Text style={styles.heroValue}>{totalAudience}명</Text>
@@ -312,8 +345,8 @@ export default function HistoryDetailScreen() {
               <RestartButton roomId={roomId} title={detail.title} hasFile={!!detail.fileUrl} />
             )}
 
-            {detail.fileUrl && <FileRow url={detail.fileUrl} icon="▤" />}
-            {detail.scriptUrl && <FileRow url={detail.scriptUrl} icon="📝" style={{ marginTop: 8 }} />}
+            {detail.fileUrl && <FileRow url={detail.fileUrl} style={{ marginTop: 16 }} />}
+            {detail.scriptUrl && <FileRow url={detail.scriptUrl} style={{ marginTop: 8 }} />}
 
             <Text style={styles.sectionTitle}>답변한 질문 ({detail.answeredQuestions.length})</Text>
             {detail.answeredQuestions.length === 0 ? (
@@ -379,27 +412,30 @@ const styles = StyleSheet.create({
 
   restartButton: {
     marginTop: 16, height: 50, borderRadius: radius.md, backgroundColor: colors.spot,
-    alignItems: 'center', justifyContent: 'center',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
   },
   restartButtonText: { color: colors.spotInk, fontWeight: '700', fontSize: 14.5 },
   disabled: { opacity: 0.5 },
 
-  fileRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 16, padding: 13,
-    borderRadius: 14, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.hairline,
+  fileCard: {
+    padding: 14, borderRadius: 16, backgroundColor: colors.surface,
+    borderWidth: 1, borderColor: colors.hairline,
   },
-  fileMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  fileCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
   fileIcon: {
     width: 38, height: 38, borderRadius: 11, backgroundColor: colors.surfaceRaised,
     alignItems: 'center', justifyContent: 'center',
   },
-  fileName: { flex: 1, fontSize: 13, fontWeight: '600', color: colors.ink },
-  fileChevron: { fontSize: 18, color: colors.inkFaint },
-  fileDownloadBtn: {
-    width: 38, height: 38, borderRadius: 11, backgroundColor: colors.surfaceRaised,
-    alignItems: 'center', justifyContent: 'center',
+  fileName: { fontSize: 13.5, fontWeight: '600', color: colors.ink },
+  fileType: { fontSize: 11, color: colors.inkFaint, marginTop: 2 },
+  fileActions: { flexDirection: 'row', gap: 8 },
+  fileActionBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    height: 40, borderRadius: 11, backgroundColor: colors.surfaceRaised,
   },
-  fileDownloadIcon: { fontSize: 16, color: colors.cue },
+  fileActionBtnPrimary: { backgroundColor: colors.cue },
+  fileActionText: { fontSize: 13, fontWeight: '700', color: colors.ink },
+  fileActionTextPrimary: { color: colors.spotInk },
 
   sectionTitle: { fontSize: 14, color: colors.inkDim, fontWeight: '600', marginTop: 20, marginBottom: 10 },
   emptyHint: { color: colors.inkFaint, fontSize: 12.5, textAlign: 'center', paddingVertical: 20 },

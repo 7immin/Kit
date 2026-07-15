@@ -1,6 +1,8 @@
 // mobile/app/questions.tsx
 import { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { socket } from '../lib/socket';
 import { EVENTS } from '../../shared/events';
@@ -14,9 +16,18 @@ function fmt(totalSeconds: number) {
   return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
 }
 
+// 방 생성자/현재 발표자 여부 — remote.tsx와 동일한 판별 기준(슬라이드 제어권 = 현재 발표자)
+function useIsCurrentPresenter() {
+  return useKitStore((s) => {
+    const me = s.presenters.find((p) => p.userId === s.userId);
+    return me?.isCurrentPresenter ?? false;
+  });
+}
+
 function DuringQuestionsView() {
   const allowMidQuestions = useKitStore((s) => s.allowMidQuestions);
   const questionsDuring = useKitStore((s) => s.questionsDuring);
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     useKitStore.setState({ unreadQuestionCount: 0 });
@@ -36,7 +47,9 @@ function DuringQuestionsView() {
           <Text style={styles.emptyHintText}>이번 발표는 발표 중 질문을 받지 않아요.{'\n'}질문은 발표가 끝난 뒤에 확인할 수 있어요.</Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollBody}>
+        // [수정] 질문이 많이 쌓여서 끝까지 스크롤했을 때 마지막 질문 카드가 안드로이드 3버튼
+        // 제스처 바에 가려지지 않도록 하단 안전영역만큼 여백 추가 (remote.tsx/waiting.tsx와 동일 패턴)
+        <ScrollView contentContainerStyle={[styles.scrollBody, { paddingBottom: 20 + insets.bottom }]}>
           {questionsDuring.length === 0 ? (
             <View style={styles.emptyHint}>
               <Text style={styles.emptyHintText}>아직 들어온 질문이 없어요.</Text>
@@ -57,6 +70,60 @@ function DuringQuestionsView() {
   );
 }
 
+// [신규] 발표 종료 후에도 슬라이드를 다시 띄워서 질문에 답할 수 있도록, PC/청중 화면에
+// 이미 떠있는 슬라이드를 여기서도 넘길 수 있게 하는 미니 컨트롤. remote.tsx의 슬라이드
+// 제어와 동일한 이벤트(SLIDE_NEXT/SLIDE_PREV)를 그대로 쓴다 — 서버가 발표 상태(status)와
+// 무관하게 "현재 발표자인가"만 검사하므로 발표 종료 후에도 그대로 동작한다.
+function SlideNav() {
+  const isCurrentPresenter = useIsCurrentPresenter();
+  const currentSlideIndex = useKitStore((s) => s.currentSlideIndex);
+  const slideCount = useKitStore((s) => s.slideCount);
+  const imageUrl = useKitStore((s) => s.slideImages[s.currentSlideIndex]);
+
+  // 슬라이드 제어권이 없는(현재 발표자가 아닌) 사람에게는 굳이 안 보여줌 — 눌러도 서버가 무시함
+  if (!isCurrentPresenter) return null;
+
+  const prevDisabled = currentSlideIndex <= 1;
+  const nextDisabled = slideCount > 0 && currentSlideIndex >= slideCount;
+
+  return (
+    <View style={styles.slideNavCard}>
+      <View style={styles.slideNavThumbWrap}>
+        {imageUrl ? (
+          <Image
+            source={{ uri: imageUrl }}
+            style={StyleSheet.absoluteFillObject}
+            contentFit="contain"
+            contentPosition="center"
+          />
+        ) : (
+          <Text style={styles.slideNavThumbText}>슬라이드 없음</Text>
+        )}
+      </View>
+      <View style={styles.slideNavRight}>
+        <Text style={styles.slideNavIdx}>SLIDE {currentSlideIndex} / {slideCount || '-'}</Text>
+        <Text style={styles.slideNavHint}>PC·청중 화면에 그대로 반영돼요</Text>
+        <View style={styles.slideNavBtnRow}>
+          <Pressable
+            style={[styles.slideNavBtn, prevDisabled && styles.disabled]}
+            disabled={prevDisabled}
+            onPress={() => socket.emit(EVENTS.SLIDE_PREV, {})}
+          >
+            <Text style={styles.slideNavBtnText}>‹ 이전</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.slideNavBtn, nextDisabled && styles.disabled]}
+            disabled={nextDisabled}
+            onPress={() => socket.emit(EVENTS.SLIDE_NEXT, {})}
+          >
+            <Text style={styles.slideNavBtnText}>다음 ›</Text>
+          </Pressable>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 function EndedQuestionsView() {
   const userId = useKitStore((s) => s.userId);
   const totalElapsedSeconds = useKitStore((s) => s.totalElapsedSeconds);
@@ -64,6 +131,7 @@ function EndedQuestionsView() {
   const answeredQuestions = useKitStore((s) => s.answeredQuestions);
   const answeringQuestion = useKitStore((s) => s.answeringQuestion);
   const [mySelectedId, setMySelectedId] = useState<string | null>(null);
+  const insets = useSafeAreaInsets();
 
   const iAmAnswering = answeringQuestion !== null && answeringQuestion.answeringPresenterId === userId;
   const someoneElseAnswering = answeringQuestion !== null && answeringQuestion.answeringPresenterId !== userId;
@@ -108,11 +176,20 @@ function EndedQuestionsView() {
         <Text style={styles.headTitle}>질문</Text>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollBody}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollBody,
+          // 아래 고정 버튼(bottomButton)이 떠있을 땐 그 버튼 높이만큼, 없을 땐 그냥 안전영역만큼
+          // 스크롤 콘텐츠 맨 아래에 여유를 줘서 마지막 카드가 버튼/제스처 바에 가려지지 않게 함
+          { paddingBottom: (bottomButton ? 90 : 20) + insets.bottom },
+        ]}
+      >
         <View style={styles.endedBanner}>
           <Text style={styles.endedEyebrow}>발표 종료됨</Text>
           <Text style={styles.endedTime}>{fmt(totalElapsedSeconds)}</Text>
         </View>
+
+        <SlideNav />
 
         <Text style={styles.hintText}>질문을 선택한 뒤 답변하기를 누르면 디스플레이 화면에 크게 뜨고, 청중 화면 목록 위에 고정돼요.</Text>
 
@@ -181,7 +258,9 @@ function EndedQuestionsView() {
       </ScrollView>
 
       {bottomButton && (
-        <View style={styles.bottomAction}>
+        // [수정] remote.tsx의 발표 종료 버튼과 같은 원인 — 안드로이드 edge-to-edge에서 화면 맨 아래
+        // 고정 버튼이 3버튼 제스처 바와 겹쳐 보였음. 하단 안전영역만큼 여백을 더해서 그 위로 띄움.
+        <View style={[styles.bottomAction, { paddingBottom: 20 + insets.bottom }]}>
           <Pressable
             style={[styles.primaryButton, bottomButton.disabled && styles.disabled]}
             disabled={bottomButton.disabled}
@@ -222,6 +301,25 @@ const styles = StyleSheet.create({
   },
   endedEyebrow: { color: colors.spot, fontSize: 11, fontWeight: '700' },
   endedTime: { fontSize: 24, fontWeight: '700', color: colors.cue, marginTop: 4 },
+
+  slideNavCard: {
+    flexDirection: 'row', gap: 12, padding: 12, borderRadius: radius.md, backgroundColor: colors.surface,
+    borderWidth: 1, borderColor: colors.hairline, marginBottom: 14,
+  },
+  slideNavThumbWrap: {
+    width: 84, height: 84, borderRadius: 10, backgroundColor: colors.surfaceRaised,
+    overflow: 'hidden', alignItems: 'center', justifyContent: 'center',
+  },
+  slideNavThumbText: { fontSize: 10, color: colors.inkFaint, textAlign: 'center', paddingHorizontal: 4 },
+  slideNavRight: { flex: 1, justifyContent: 'center', gap: 4 },
+  slideNavIdx: { fontSize: 12.5, fontWeight: '700', color: colors.ink },
+  slideNavHint: { fontSize: 10.5, color: colors.inkFaint },
+  slideNavBtnRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  slideNavBtn: {
+    flex: 1, height: 32, borderRadius: 8, backgroundColor: colors.surfaceRaised,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  slideNavBtnText: { fontSize: 12, fontWeight: '600', color: colors.ink },
 
   hintText: { fontSize: 12.5, color: colors.inkFaint, lineHeight: 19, marginBottom: 14 },
 

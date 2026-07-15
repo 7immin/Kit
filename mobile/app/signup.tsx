@@ -1,6 +1,6 @@
 // mobile/app/signup.tsx
 import { useState } from 'react';
-import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
+import { View, Text, TextInput, Pressable, StyleSheet, Image } from 'react-native';
 import { router } from 'expo-router';
 import { SERVER_URL } from '../lib/socket';
 import { colors } from '../constants/theme';
@@ -39,7 +39,20 @@ export default function SignupScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>회원가입</Text>
+      {/* [수정] login.tsx에는 있던 닫기 버튼 + 브랜드 배지 헤더가 signup.tsx에는 아예 없어서
+          두 화면이 서로 다른 앱처럼 보이던 문제 — login.tsx와 동일한 헤더로 통일 */}
+      <Pressable style={styles.closeBtn} onPress={() => router.back()}>
+        <Text style={styles.closeBtnText}>✕</Text>
+      </Pressable>
+
+      <View style={styles.brandBadge}>
+        <Image
+          source={require('../assets/images/logo-mark.png')}
+          style={styles.brandBadgeMark}
+          resizeMode="contain"
+        />
+      </View>
+      <Text style={styles.title}>Kit 계정 만들기</Text>
 
       <TextInput
         style={styles.input}
@@ -79,6 +92,16 @@ export default function SignupScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.canvas, justifyContent: 'center', padding: 24, gap: 10 },
+  closeBtn: {
+    position: 'absolute', top: 56, right: 20, width: 36, height: 36, borderRadius: 999,
+    backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center',
+  },
+  closeBtnText: { fontSize: 15, color: colors.inkDim },
+  brandBadge: {
+    width: 48, height: 48, borderRadius: 14, backgroundColor: colors.spot,
+    alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginBottom: 12,
+  },
+  brandBadgeMark: { width: 30, height: 30 },
   title: { fontSize: 20, fontWeight: '700', color: colors.ink, textAlign: 'center', marginBottom: 20 },
   input: {
     backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.hairline,

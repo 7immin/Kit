@@ -3,6 +3,8 @@ import { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Pressable, Switch, ScrollView, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
+import * as Clipboard from 'expo-clipboard';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
 import { socket, SERVER_URL } from '../lib/socket';
 import { EVENTS } from '../../shared/events';
@@ -374,10 +376,42 @@ function StartPresentingButton() {
   );
 }
 
+// 눌러서 복사할 수 있는 코드 칩. 값이 없으면(아직 발급 전) 눌러도 아무 반응 없음.
+function CodeChip({ label, value }: { label: string; value: string | null }) {
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleCopy = async () => {
+    if (!value) return;
+    await Clipboard.setStringAsync(value);
+    setCopied(true);
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => setCopied(false), 1400);
+  };
+
+  useEffect(() => () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+  }, []);
+
+  return (
+    <Pressable style={styles.codeChip} onPress={handleCopy} disabled={!value}>
+      <Ionicons
+        name={copied ? 'checkmark' : 'copy-outline'}
+        size={14}
+        color={copied ? colors.cue : colors.inkFaint}
+        style={styles.codeChipIcon}
+      />
+      <Text style={styles.codeLabel}>{label}</Text>
+      <Text style={styles.codeValue}>{copied ? '복사됨' : (value ?? '-')}</Text>
+    </Pressable>
+  );
+}
+
 export default function WaitingScreen() {
   const title = useKitStore((s) => s.title);
   const displayCode = useKitStore((s) => s.displayCode);
   const presenterCode = useKitStore((s) => s.presenterCode);
+  const audienceCode = useKitStore((s) => s.audienceCode);
   const isHost = useIsHost();
   const insets = useSafeAreaInsets();
 
@@ -397,14 +431,9 @@ export default function WaitingScreen() {
       <Text style={styles.roomTitle}>{title ?? '제목 없는 발표'}</Text>
 
       <View style={styles.codeRow}>
-        <View style={styles.codeChip}>
-          <Text style={styles.codeLabel}>디스플레이 코드</Text>
-          <Text style={styles.codeValue}>{displayCode ?? '-'}</Text>
-        </View>
-        <View style={styles.codeChip}>
-          <Text style={styles.codeLabel}>발표자 코드</Text>
-          <Text style={styles.codeValue}>{presenterCode ?? '-'}</Text>
-        </View>
+        <CodeChip label="디스플레이 코드" value={displayCode} />
+        <CodeChip label="발표자 코드" value={presenterCode} />
+        <CodeChip label="청중 코드" value={audienceCode} />
       </View>
 
       <View style={styles.card}>
@@ -456,11 +485,12 @@ const styles = StyleSheet.create({
   scrollBody: { paddingHorizontal: 20, gap: 4 },
   roomTitle: { color: colors.ink, fontSize: 19, fontWeight: '700', marginBottom: 16 },
 
-  codeRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
+  codeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 16 },
   codeChip: {
-    flex: 1, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.hairline,
-    borderRadius: radius.md, padding: 12,
+    flexGrow: 1, flexBasis: '30%', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.hairline,
+    borderRadius: radius.md, padding: 12, position: 'relative',
   },
+  codeChipIcon: { position: 'absolute', top: 10, right: 10 },
   codeLabel: { color: colors.inkFaint, fontSize: 11 },
   codeValue: { color: colors.cue, fontSize: 16, fontWeight: '700', marginTop: 3 },
 

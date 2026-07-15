@@ -1,8 +1,9 @@
 // mobile/app/index.tsx
 import { useState, useCallback, useEffect } from 'react';
-import { View, Text, TextInput, Pressable, StyleSheet, ScrollView, Alert } from 'react-native';
+import { View, Text, TextInput, Pressable, StyleSheet, ScrollView, Alert, Image } from 'react-native';
 import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { socket, getLocalUserId, fetchMyHistory, type HistoryListItem } from '../lib/socket';
 import { EVENTS } from '../../shared/events';
 import { useKitStore } from '../store/useKitStore';
@@ -162,7 +163,12 @@ export default function StartScreen() {
       {/* 브랜드 마크 + 로그인 상태 */}
       <View style={styles.brandRow}>
         <View style={styles.brandBadge}>
-          <Text style={styles.brandBadgeText}>K</Text>
+          {/* [수정] 새 로고(K + 시그널)로 교체 — 텍스트 "K" 대신 실제 마크 이미지를 배지 안에 표시 */}
+          <Image
+            source={require('../assets/images/logo-mark.png')}
+            style={styles.brandBadgeMark}
+            resizeMode="contain"
+          />
         </View>
         <Text style={styles.brandName}>Kit</Text>
         <View style={{ flex: 1 }} />
@@ -242,7 +248,7 @@ export default function StartScreen() {
             }
           >
             <View style={styles.recentThumb}>
-              <Text style={{ color: colors.cue }}>▤</Text>
+              <Ionicons name="document-text-outline" size={18} color={colors.cue} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.recentTitle} numberOfLines={1}>{item.title}</Text>
@@ -267,7 +273,7 @@ const styles = StyleSheet.create({
     width: 34, height: 34, borderRadius: 10, backgroundColor: colors.spot,
     alignItems: 'center', justifyContent: 'center',
   },
-  brandBadgeText: { color: colors.spotInk, fontWeight: '700', fontSize: 16 },
+  brandBadgeMark: { width: 22, height: 22 },
   brandName: { fontSize: 17, fontWeight: '700', color: colors.ink },
 
   accountRow: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 20 },

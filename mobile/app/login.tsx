@@ -1,6 +1,6 @@
 // mobile/app/login.tsx
 import { useState } from 'react';
-import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
+import { View, Text, TextInput, Pressable, StyleSheet, Image } from 'react-native';
 import { router } from 'expo-router';
 import { SERVER_URL } from '../lib/socket';
 import { colors, radius } from '../constants/theme';
@@ -47,7 +47,15 @@ export default function LoginScreen() {
         <Text style={styles.closeBtnText}>✕</Text>
       </Pressable>
 
-      <Text style={styles.brandBadge}>K</Text>
+      <View style={styles.brandBadge}>
+        {/* [수정] 옛날 텍스트 "K" 배지를 index.tsx와 동일하게 실제 로고 마크 이미지로 교체 —
+            브랜딩이 화면마다 다르게 보이던 문제 */}
+        <Image
+          source={require('../assets/images/logo-mark.png')}
+          style={styles.brandBadgeMark}
+          resizeMode="contain"
+        />
+      </View>
       <Text style={styles.title}>Kit에 로그인</Text>
 
       <TextInput
@@ -87,10 +95,10 @@ const styles = StyleSheet.create({
   },
   closeBtnText: { fontSize: 15, color: colors.inkDim },
   brandBadge: {
-    width: 48, height: 48, borderRadius: 14, backgroundColor: colors.spot, color: colors.spotInk,
-    textAlign: 'center', lineHeight: 48, fontWeight: '700', fontSize: 20, alignSelf: 'center', marginBottom: 12,
-    overflow: 'hidden',
+    width: 48, height: 48, borderRadius: 14, backgroundColor: colors.spot,
+    alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginBottom: 12,
   },
+  brandBadgeMark: { width: 30, height: 30 },
   title: { fontSize: 20, fontWeight: '700', color: colors.ink, textAlign: 'center', marginBottom: 20 },
   input: {
     backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.hairline,

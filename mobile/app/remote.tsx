@@ -1,7 +1,9 @@
 // mobile/app/remote.tsx
 import { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, Modal, Alert, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
@@ -36,7 +38,7 @@ function QuestionBell() {
 
   return (
     <Pressable style={styles.iconBtn} onPress={() => router.push('/questions')}>
-      <Text style={styles.iconBtnText}>❓</Text>
+      <Ionicons name="chatbubble-ellipses-outline" size={18} color={colors.ink} />
       {unread > 0 && (
         <View style={styles.badge}>
           <Text style={styles.badgeText}>{unread}</Text>
@@ -219,6 +221,10 @@ function HandoffSheet({ visible, onClose }: { visible: boolean; onClose: () => v
 function BottomActions() {
   const isCurrentPresenter = useIsCurrentPresenter();
   const [handoffVisible, setHandoffVisible] = useState(false);
+  // [수정] 안드로이드 edge-to-edge라 화면 맨 아래(발표 종료 버튼 등)가 3버튼 제스처 바 영역과
+  // 겹쳐서 보였음(삼성 등). waiting.tsx에서 했던 것과 동일하게, 기기의 하단 안전영역만큼
+  // 버튼 줄 아래에 여백을 더 줘서 제스처 바 위로 밀어올림.
+  const insets = useSafeAreaInsets();
 
   const handleEnd = () => {
     Alert.alert('발표 종료', '발표를 종료할까요?', [
@@ -228,13 +234,14 @@ function BottomActions() {
   };
 
   return (
-    <View style={styles.bottomRow}>
+    <View style={[styles.bottomRow, { paddingBottom: 16 + insets.bottom }]}>
       <Pressable
         style={[styles.ghostButton, !isCurrentPresenter && styles.disabled]}
         disabled={!isCurrentPresenter}
         onPress={() => setHandoffVisible(true)}
       >
-        <Text style={styles.ghostButtonText}>⇄ 발표자 교체</Text>
+        <Ionicons name="swap-horizontal-outline" size={16} color={colors.ink} />
+        <Text style={styles.ghostButtonText}>발표자 교체</Text>
       </Pressable>
       <Pressable
         style={[styles.dangerButton, !isCurrentPresenter && styles.disabled]}
@@ -369,7 +376,7 @@ const styles = StyleSheet.create({
   bottomRow: { flexDirection: 'row', gap: 10, paddingHorizontal: 20, paddingVertical: 16 },
   ghostButton: {
     flex: 1, height: 52, borderRadius: radius.md, borderWidth: 1, borderColor: colors.hairline,
-    alignItems: 'center', justifyContent: 'center', backgroundColor: 'transparent',
+    flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: 'transparent',
   },
   ghostButtonText: { color: colors.ink, fontSize: 14, fontWeight: '600' },
   dangerButton: {
