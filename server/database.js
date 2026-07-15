@@ -1,6 +1,6 @@
 // server/database.js
 const Database = require('better-sqlite3');
-const db = new Database('kit.db');
+const db = new Database(process.env.DB_PATH || 'kit.db');
 
 db.exec(`
   -- 0. 회원 테이블

@@ -47,7 +47,7 @@ const multer = require('multer');
 const fs = require('fs');
 
 // node를 어느 경로에서 실행하든 항상 같은 폴더를 가리키도록 절대경로로 고정
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 const upload = multer({ dest: UPLOAD_DIR });
 
 const mammoth = require('mammoth');
@@ -1178,17 +1178,31 @@ io.on('connection', (socket) => {
     // [수정] 발표 도중 나갔다 들어온 사람이 있으면, 그 순간 연결돼 있는 users만 세서는
     // 총 발표자/청중 수가 실제보다 적게 나왔다. room_participants는 "한 번이라도 들어온
     // 사람"을 전부 남겨두므로(연결이 끊겨도 안 지워짐), 여기서 집계해야 정확하다.
-    const presenterCount = db.prepare("SELECT COUNT(*) as c FROM room_participants WHERE room_id = ? AND role IN ('host', 'presenter')").get(room.room_id).c;
     const audienceCount = db.prepare("SELECT COUNT(*) as c FROM room_participants WHERE room_id = ? AND role = 'audience'").get(room.room_id).c;
-
-    db.prepare(`UPDATE rooms SET status = 'end', ended_at = ?, total_time_seconds = ?, total_presenters = ?, total_audience = ? WHERE room_id = ?`)
-      .run(endTime, totalElapsedSeconds, presenterCount, audienceCount, room.room_id);
 
     // [수정] 예전엔 (그 순간 연결돼 있는) users 테이블에서 발표자 목록을 뽑았기 때문에,
     // 발표 종료 전에 앱을 끄거나 연결이 끊긴 발표자는 "기록"에서 통째로 빠졌다 — 이게
     // "방장한테만 기록이 남는다"는 증상의 원인이었다. room_participants는 입장하는 순간
     // 바로 남기므로, 끝까지 연결돼 있었는지와 무관하게 참여했던 모든 발표자가 남는다.
-    const presenters = db.prepare("SELECT user_id, account_id, display_name_at_time as name, first_joined_at as joinedAt FROM room_participants WHERE room_id = ? AND role IN ('host', 'presenter')").all(room.room_id);
+    //
+    // [수정] room_participants는 UNIQUE(room_id, user_id)라서, 같은 사람이 앱 재설치/저장소
+    // 초기화 등으로 로컬 user_id가 바뀐 채 재입장하면 서로 다른 행으로 중복 저장될 수 있다.
+    // (실제로 로그인 토큰이 누락된 채 두 번 입장한 사례에서, account_id는 둘 다 null인데
+    // user_id만 다른 행이 두 개 생기는 걸 확인함.) account_id가 있으면 account_id로,
+    // 없으면 user_id로 묶어서 같은 사람을 한 명으로 센다.
+    const presenterRows = db.prepare("SELECT user_id, account_id, display_name_at_time as name, first_joined_at as joinedAt FROM room_participants WHERE room_id = ? AND role IN ('host', 'presenter') ORDER BY first_joined_at ASC").all(room.room_id);
+    const seenPresenterKeys = new Set();
+    const presenters = presenterRows.filter(p => {
+      const key = p.account_id || p.user_id;
+      if (seenPresenterKeys.has(key)) return false;
+      seenPresenterKeys.add(key);
+      return true;
+    });
+    const presenterCount = presenters.length;
+
+    db.prepare(`UPDATE rooms SET status = 'end', ended_at = ?, total_time_seconds = ?, total_presenters = ?, total_audience = ? WHERE room_id = ?`)
+      .run(endTime, totalElapsedSeconds, presenterCount, audienceCount, room.room_id);
+
     const insertSession = db.prepare("INSERT INTO session_presenters (room_id, account_id, display_name_at_time, joined_at) VALUES (?, ?, ?, ?)");
     for (const p of presenters) {
       insertSession.run(room.room_id, p.account_id, p.name || '발표자', p.joinedAt || Date.now());
@@ -1393,7 +1407,7 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = 4000;
+const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
   console.log(`KIT 백엔드 서버 구동 중: http://localhost:${PORT}`);
 });
