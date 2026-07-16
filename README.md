@@ -251,6 +251,9 @@ sequenceDiagram
 ### 화면 / 인터페이스 설계
 
 <!-- Figma 링크, 화면 이미지, CLI 사용 예시, 앱 화면 등 -->
+**화면 설계서**
+
+<img width="3652" height="1575" alt="Image" src="https://github.com/user-attachments/assets/23fa9e17-74e4-4d69-b139-0e35f31319aa" />
 
 ### 데이터 구조
 
