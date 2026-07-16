@@ -104,7 +104,7 @@ function SlideNav() {
       <View style={styles.slideNavRight}>
         <Text style={styles.slideNavIdx}>SLIDE {currentSlideIndex} / {slideCount || '-'}</Text>
         <Text style={styles.slideNavHint}>
-          {isCurrentPresenter ? 'PC·청중 화면에 그대로 반영돼요' : '질문에 답변하면 슬라이드 제어권을 받아요'}
+          {isCurrentPresenter ? 'PC 화면에 그대로 반영돼요' : '질문에 답변하면 슬라이드 제어권을 받아요'}
         </Text>
         <View style={styles.slideNavBtnRow}>
           <Pressable

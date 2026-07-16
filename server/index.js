@@ -1033,6 +1033,13 @@ io.on('connection', (socket) => {
       ? db.prepare('SELECT COUNT(*) as count FROM slides WHERE room_id = ?').get(roomId).count
       : 0;
 
+    // [수정] 청중이 이미 들어와 있는 방에 나중에 들어온 발표자는 room:audience_count(청중
+    // 입/퇴장 시점에만 쏘는 브로드캐스트)를 이미 놓친 상태라, 다른 청중이 다시 들어오거나
+    // 나가기 전까지 화면에 "청중 0명"으로 잘못 표시됐다. 입장 시점에 현재 값을 직접 실어보낸다.
+    const audienceCount = db.prepare(
+      "SELECT COUNT(*) as count FROM users WHERE room_id = ? AND role = 'audience'"
+    ).get(roomId).count;
+
     socket.emit(EVENTS.ROOM_JOINED, {
       roomId, role, userId, nickname: displayName,
       title: room.title,
@@ -1044,7 +1051,8 @@ io.on('connection', (socket) => {
       currentFileUrl: room.file_url || null,
       slideCount,
       hasScript: !!room.has_script,
-      aiNotesGenerated: !!room.ai_notes_generated
+      aiNotesGenerated: !!room.ai_notes_generated,
+      audienceCount
     });
     broadcastPresenterList(roomId);
   });

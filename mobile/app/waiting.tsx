@@ -106,6 +106,7 @@ function SettingsToggles() {
 function DeckUploadButton() {
   const [uploading, setUploading] = useState(false);
   const deckUploaded = useKitStore((s) => s.deckUploaded);
+  const slideCount = useKitStore((s) => s.slideCount);
   const roomId = useKitStore((s) => s.roomId);
 
   const handlePick = async () => {
@@ -135,9 +136,12 @@ function DeckUploadButton() {
         // [신규] 새 자료를 올렸으니 예전 AI 요약 잠금은 무의미해짐 — 다시 눌러서 새로 만들 수 있게 풀어줌
         useKitStore.setState({ deckUploaded: true, slideCount: data.slideCount, aiSummaryUsed: false });
         // 응답에 이미 슬라이드별 이미지 URL이 실려오므로, 별도 GET 없이 바로 store에 반영
+        // [수정] lib/socket.ts의 fetchSlideImages와 동일한 이유로 캐시 무효화 쿼리를 붙임 —
+        // 같은 방에 재업로드하면 URL 경로 자체는 그대로라 expo-image가 이전 이미지를 캐시해서 보여줄 수 있음
+        const cacheBuster = Date.now();
         const images: Record<number, string> = {};
         (data.images || []).forEach((img: { slideIndex: number; imageUrl: string }) => {
-          images[img.slideIndex] = `${SERVER_URL}${img.imageUrl}`;
+          images[img.slideIndex] = `${SERVER_URL}${img.imageUrl}?v=${cacheBuster}`;
         });
         useKitStore.getState().setSlideImages(images);
       } else {
@@ -157,7 +161,7 @@ function DeckUploadButton() {
       </View>
       <View style={{ flex: 1 }}>
         <Text style={styles.uploadTitle}>
-          {uploading ? '업로드 중...' : deckUploaded ? `발표 자료 업로드 완료 · ${useKitStore.getState().slideCount}슬라이드` : '발표자료 업로드'}
+          {uploading ? '업로드 중...' : deckUploaded ? `발표 자료 업로드 완료 · ${slideCount}슬라이드` : '발표자료 업로드'}
         </Text>
         <Text style={styles.uploadSub}>PDF</Text>
       </View>

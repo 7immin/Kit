@@ -30,9 +30,13 @@ export async function fetchSlideImages(roomId: string): Promise<Record<number, s
     const res = await fetch(`${SERVER_URL}/rooms/${roomId}/slides`);
     if (!res.ok) return {};
     const data = await res.json();
+    // [수정] 같은 방에 자료를 재업로드해도 이미지 URL 경로(/files/{roomId}_slide_{n}.png)는
+    // 그대로라서, expo-image가 URL을 캐시 키로 써서 옛날에 캐시해둔 이미지를 계속 보여줄 수 있었음.
+    // 매 조회 시점의 타임스탬프를 쿼리로 붙여 URL 자체를 새 것으로 만들어 캐시를 무효화한다.
+    const cacheBuster = Date.now();
     const map: Record<number, string> = {};
     (data.slides || []).forEach((s: { slideIndex: number; imageUrl?: string | null }) => {
-      if (s.imageUrl) map[s.slideIndex] = `${SERVER_URL}${s.imageUrl}`;
+      if (s.imageUrl) map[s.slideIndex] = `${SERVER_URL}${s.imageUrl}?v=${cacheBuster}`;
     });
     return map;
   } catch (e) {
